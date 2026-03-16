@@ -1,36 +1,93 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# The Multi-Model Evaluator
 
-## Getting Started
+A professional side-by-side model comparison tool built with Next.js and AI SDK.
 
-First, run the development server:
+## What it does
+
+- Compares two model outputs for the same prompt in parallel.
+- Starts with Google Gemini defaults (free-tier oriented model IDs).
+- Supports bring-your-own-key (BYOK) for:
+  - Google
+  - OpenAI
+  - Anthropic
+- Keeps user-entered keys session-only in browser state (no local storage, no database persistence).
+
+## Tech stack
+
+- Next.js App Router
+- AI SDK (`ai`, `@ai-sdk/react`)
+- Providers:
+  - `@ai-sdk/google`
+  - `@ai-sdk/openai`
+  - `@ai-sdk/anthropic`
+
+## Setup
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create `.env.local` in the project root:
+
+```env
+GOOGLE_API_KEY=your_google_api_key
+```
+
+`GOOGLE_API_KEY` is used as the default key for Google panel requests.
+
+3. Start the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+4. Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+`http://localhost:3000`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## How to use
 
-## Learn More
+1. Enter one prompt in the shared composer.
+2. Configure each panel:
+   - Provider
+   - Model ID
+   - API key (required for OpenAI/Anthropic, optional override for Google)
+3. Click **Run Evaluation**.
+4. Watch both responses stream side by side.
+5. Use **Stop** to cancel active runs.
 
-To learn more about Next.js, take a look at the following resources:
+## API contract (`/api/chat`)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Request body:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```ts
+{
+  messages: UIMessage[],
+  panel: {
+    provider: 'google' | 'openai' | 'anthropic',
+    modelId: string,
+    apiKey?: string
+  },
+  options?: {
+    systemPrompt?: string,
+    temperature?: number
+  }
+}
+```
 
-## Deploy on Vercel
+Notes:
+- Uses `convertToModelMessages(messages)` before model invocation.
+- Uses `toUIMessageStreamResponse({ originalMessages })` for stable message streaming.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Recommended defaults
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Left panel: `google` + `gemini-2.0-flash-lite`
+- Right panel: `google` + `gemini-2.0-flash`
+
+You can override with any valid model ID from your selected provider.
+
+## Security note
+
+If you accidentally exposed a real API key in commits or screenshots, rotate that key immediately.

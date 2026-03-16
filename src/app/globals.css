@@ -1,8 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f3f7f5;
+  --surface: #ffffff;
+  --surface-muted: #f7fbf9;
+  --foreground: #0f1e1a;
+  --muted: #5e716b;
+  --border: #d5e4de;
+  --brand: #1c8f63;
+  --brand-dark: #136445;
+  --danger: #c33d3d;
 }
 
 @theme inline {
@@ -12,15 +19,253 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+}
+
+.app-shell {
+  min-height: 100vh;
+  position: relative;
+  overflow: hidden;
+}
+
+.ambient-glow {
+  position: absolute;
+  inset: -25%;
+  background:
+    radial-gradient(circle at 12% 25%, #8ed9b9 0, transparent 35%),
+    radial-gradient(circle at 85% 10%, #d5f2d8 0, transparent 38%),
+    radial-gradient(circle at 50% 90%, #b8e4d4 0, transparent 34%);
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.content-wrap {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 2.5rem 1rem 3rem;
+}
+
+.hero {
+  margin-bottom: 1.5rem;
+}
+
+.eyebrow {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--brand-dark);
+  font-size: 0.75rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+
+.hero h1 {
+  font-size: clamp(1.5rem, 4vw, 2.35rem);
+  line-height: 1.1;
+  font-weight: 750;
+  margin-bottom: 0.6rem;
+}
+
+.hero-copy {
+  max-width: 58rem;
+  color: var(--muted);
+  font-size: 1rem;
+}
+
+.composer-card {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 1rem;
+  background: color-mix(in oklab, var(--surface) 92%, #d5efe2 8%);
+  backdrop-filter: blur(5px);
+  box-shadow: 0 24px 60px rgb(28 54 41 / 0.08);
+}
+
+.composer-grid {
+  display: grid;
+  gap: 1rem;
+}
+
+.prompt-box,
+.composer-card input,
+.panel-config input,
+.panel-config select {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  padding: 0.75rem 0.9rem;
+  outline: none;
+}
+
+.prompt-box:focus,
+.composer-card input:focus,
+.panel-config input:focus,
+.panel-config select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgb(28 143 99 / 0.14);
+}
+
+.options-column {
+  display: grid;
+  gap: 0.8rem;
+}
+
+label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+  font-weight: 550;
+}
+
+.action-row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.btn-primary,
+.btn-secondary {
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.95rem;
+  font-size: 0.9rem;
+  font-weight: 650;
+  border: 1px solid transparent;
+  transition: all 120ms ease;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--brand), var(--brand-dark));
+  color: #f7fffc;
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panel-grid {
+  margin-top: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.panel-card {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 18px 40px rgb(17 47 34 / 0.08);
+  min-height: 520px;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel-head {
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.9rem 1rem;
+}
+
+.panel-head h2 {
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.status-pill {
+  border-radius: 9999px;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.73rem;
+  font-weight: 700;
+  background: var(--surface-muted);
+  color: var(--muted);
+}
+
+.status-submitted,
+.status-streaming {
+  background: #dff4ea;
+  color: #186a4a;
+}
+
+.status-error {
+  background: #ffe4e4;
+  color: #992727;
+}
+
+.panel-config {
+  border-bottom: 1px solid var(--border);
+  padding: 0.9rem 1rem;
+  display: grid;
+  gap: 0.75rem;
+  background: var(--surface-muted);
+}
+
+.panel-output {
+  padding: 1rem;
+  white-space: pre-wrap;
+  overflow: auto;
+  flex: 1;
+  line-height: 1.55;
+  font-size: 0.95rem;
+}
+
+.panel-empty {
+  color: var(--muted);
+}
+
+.panel-error {
+  color: var(--danger);
+  margin-bottom: 0.75rem;
+}
+
+.comparison-card {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: color-mix(in oklab, var(--surface) 95%, #e7f8f0 5%);
+  box-shadow: 0 16px 34px rgb(17 47 34 / 0.08);
+  padding: 1rem;
+}
+
+.comparison-card h3 {
+  font-size: 1.05rem;
+  font-weight: 750;
+  margin-bottom: 0.6rem;
+}
+
+.comparison-card p {
+  margin-bottom: 0.35rem;
+  line-height: 1.5;
+}
+
+@media (min-width: 980px) {
+  .content-wrap {
+    padding: 3.2rem 1.5rem 3.5rem;
+  }
+
+  .composer-grid {
+    grid-template-columns: 1.6fr 1fr;
+  }
+
+  .panel-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
