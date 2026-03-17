@@ -33,6 +33,11 @@ type Attempt = {
   label: string;
 };
 
+type ParsedEmbeddings = {
+  embeddings?: number[][];
+  data?: Array<{ embedding?: number[] }>;
+};
+
 const PROJECT_REQUIRED_FOUNDRY_MODELS = [
   'nomic-embed-text-v1',
   'phi-4-mini-reasoning',
@@ -186,6 +191,8 @@ const DEFAULT_CHAT_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
   lmstudio: 'qwen2.5-7b-instruct',
 };
 
+const LMSTUDIO_DEFAULT_BASE_URL = 'http://127.0.0.1:1234';
+
 export async function listModels(runtime: RuntimeName): Promise<{
   models: RuntimeModel[];
   warning?: string;
@@ -312,27 +319,92 @@ async function runCommandWithInput(
 }
 
 export async function getEmbeddings(runtime: RuntimeName, texts: string[]): Promise<number[][]> {
-  const modelId = runtime === 'lmstudio' ? 'text-embedding-nomic-embed-text-v1.5' : 'nomic-embed-text-v1';
+  if (runtime === 'lmstudio') {
+    return getLmStudioEmbeddings(texts);
+  }
+
+  const modelId = 'nomic-embed-text-v1';
   const payload = JSON.stringify({ texts });
-
-  const binaryPath = runtime === 'lmstudio' ? LMSTUDIO_BINARIES[0] : FOUNDRY_BINARIES[0];
-  const args = runtime === 'lmstudio' ? ['remote', 'run', modelId] : ['model', 'run', modelId];
-
-  const result = await runCommandWithInput(binaryPath, args, payload);
+  const result = await runCommandWithInput(
+    FOUNDRY_BINARIES[0],
+    ['model', 'run', modelId],
+    payload,
+  );
 
   if (!result.ok) {
     throw new Error(`Failed to get embeddings: ${result.stderr}`);
   }
 
-  try {
-    const parsed = JSON.parse(result.stdout) as { embeddings: number[][] };
-    if (!parsed.embeddings || !Array.isArray(parsed.embeddings)) {
-      throw new Error('Invalid embeddings format from model.');
-    }
-    return parsed.embeddings;
-  } catch (e) {
-    throw new Error(`Failed to parse embeddings output: ${e instanceof Error ? e.message : 'Unknown error'}`);
+  return parseEmbeddingsOutput(result.stdout);
+}
+
+function getLmStudioBaseUrl(): string {
+  return (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_DEFAULT_BASE_URL).replace(/\/+$/, '');
+}
+
+function parseEmbeddingsOutput(stdout: string): number[][] {
+  const parsed = JSON.parse(stdout) as ParsedEmbeddings;
+  const fromDirect = parsed.embeddings;
+  if (Array.isArray(fromDirect) && fromDirect.every(item => Array.isArray(item))) {
+    return fromDirect;
   }
+
+  const fromData = parsed.data?.map(item => item.embedding).filter(
+    (item): item is number[] => Array.isArray(item),
+  );
+  if (fromData && fromData.length > 0) {
+    return fromData;
+  }
+
+  throw new Error('Invalid embeddings format from model.');
+}
+
+async function getLmStudioEmbeddings(texts: string[]): Promise<number[][]> {
+  const modelId = 'text-embedding-nomic-embed-text-v1.5';
+  const errors: string[] = [];
+
+  try {
+    const base = getLmStudioBaseUrl();
+    const response = await fetch(`${base}/v1/embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: modelId,
+        input: texts,
+      }),
+    });
+
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${raw.slice(0, 240)}`);
+    }
+
+    return parseEmbeddingsOutput(raw);
+  } catch (error) {
+    errors.push(`LM Studio HTTP API failed (${error instanceof Error ? error.message : 'unknown error'})`);
+  }
+
+  const payload = JSON.stringify({ texts });
+  const attempts: Attempt[] = LMSTUDIO_BINARIES.flatMap(cmd => [
+    { cmd, args: ['run', modelId], label: `${cmd} run` },
+    { cmd, args: ['remote', 'run', modelId], label: `${cmd} remote run` },
+  ]);
+
+  for (const attempt of attempts) {
+    const result = await runCommandWithInput(attempt.cmd, attempt.args, payload);
+    if (!result.ok) {
+      errors.push(`${attempt.label} -> ${result.stderr.trim() || 'failed'}`);
+      continue;
+    }
+
+    try {
+      return parseEmbeddingsOutput(result.stdout);
+    } catch (error) {
+      errors.push(`${attempt.label} parse -> ${error instanceof Error ? error.message : 'unknown parse error'}`);
+    }
+  }
+
+  throw new Error(`Failed to get embeddings: ${errors.join(' | ')}`);
 }
 
 function extractGeneratedText(stdout: string): string {
@@ -367,15 +439,13 @@ export async function generateGroundedAnswer(args: {
   timeoutMs?: number;
 }): Promise<string> {
   const modelId = args.modelId?.trim() || getDefaultChatModel(args.runtime);
-  const binaryPath = args.runtime === 'lmstudio' ? LMSTUDIO_BINARIES[0] : FOUNDRY_BINARIES[0];
-  const commandArgs =
-    args.runtime === 'lmstudio'
-      ? ['remote', 'run', modelId]
-      : ['model', 'run', modelId];
+  if (args.runtime === 'lmstudio') {
+    return generateWithLmStudio(modelId, args.prompt, args.timeoutMs ?? 45_000);
+  }
 
   const result = await runCommandWithInput(
-    binaryPath,
-    commandArgs,
+    FOUNDRY_BINARIES[0],
+    ['model', 'run', modelId],
     args.prompt,
     args.timeoutMs ?? 45_000,
   );
@@ -390,4 +460,61 @@ export async function generateGroundedAnswer(args: {
   }
 
   return text;
+}
+
+async function generateWithLmStudio(
+  modelId: string,
+  prompt: string,
+  timeoutMs: number,
+): Promise<string> {
+  const errors: string[] = [];
+
+  try {
+    const base = getLmStudioBaseUrl();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    const raw = await response.text();
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${raw.slice(0, 240)}`);
+    }
+
+    const text = extractGeneratedText(raw);
+    if (!text) {
+      throw new Error('Empty completion payload');
+    }
+    return text;
+  } catch (error) {
+    errors.push(`LM Studio HTTP API failed (${error instanceof Error ? error.message : 'unknown error'})`);
+  }
+
+  const attempts: Attempt[] = LMSTUDIO_BINARIES.flatMap(cmd => [
+    { cmd, args: ['run', modelId], label: `${cmd} run` },
+    { cmd, args: ['remote', 'run', modelId], label: `${cmd} remote run` },
+  ]);
+
+  for (const attempt of attempts) {
+    const result = await runCommandWithInput(attempt.cmd, attempt.args, prompt, timeoutMs);
+    if (!result.ok) {
+      errors.push(`${attempt.label} -> ${result.stderr.trim() || 'failed'}`);
+      continue;
+    }
+
+    const text = extractGeneratedText(result.stdout);
+    if (text) return text;
+    errors.push(`${attempt.label} -> empty response`);
+  }
+
+  throw new Error(errors.join(' | '));
 }

@@ -181,6 +181,10 @@ To run this project on your machine, you'll need a few prerequisites.
   docker run -p 8000:8000 chromadb/chroma
   ```
 - **Foundry Local:** Follow the [official Foundry Local installation guide](https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started).
+- **LM Studio runtime (optional):** Start the local server if you want to use `runtime=lmstudio`.
+  ```bash
+  lms server start
+  ```
 - **An Embedding Model:** You need to have the `nomic-embed-text-v1` model available in your Foundry Local runtime. You can typically download it by running:
   ```bash
   foundry model download nomic-embed-text-v1
