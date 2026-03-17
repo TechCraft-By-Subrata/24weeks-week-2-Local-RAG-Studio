@@ -123,8 +123,10 @@ export async function searchChunks(runtime: RuntimeName, query: string, topK: nu
       return [];
     }
 
-    const distance = typeof row.distance === 'number' ? row.distance : 1;
-    const score = Math.max(0, 1.0 - distance);
+    const distance = typeof row.distance === 'number' ? row.distance : null;
+    // Chroma distance semantics vary by metric; 1/(1+d) keeps score in [0,1]
+    // and avoids dropping valid hits when raw distance is > 1 (common with L2).
+    const score = distance === null ? 0.5 : 1 / (1 + Math.max(0, distance));
     const metadata = row.metadata as
       | { source?: string; page?: number | null }
       | null
@@ -140,7 +142,10 @@ export async function searchChunks(runtime: RuntimeName, query: string, topK: nu
     };
   });
 
-  return hits.filter(h => h.score >= minScore);
+  const filtered = hits.filter(h => h.score >= minScore);
+  // Fallback: if retrieval found rows but threshold removed all, return top rows
+  // instead of an empty result to avoid false "no indexed documents" UX.
+  return filtered.length > 0 ? filtered : hits;
 }
 
 export async function getIngestStats() {
