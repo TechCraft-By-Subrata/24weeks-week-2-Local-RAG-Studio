@@ -10,6 +10,7 @@ type ChatRequest = {
     minScore?: number;
     temperature?: number;
     systemPrompt?: string;
+    sourceFilter?: string[];
   };
 };
 
@@ -31,14 +32,18 @@ export async function POST(req: Request) {
   const modelId = body.modelId?.trim();
   const topK = body.options?.topK ?? 5;
   const minScore = body.options?.minScore ?? 0.2;
+  const sourceFilter =
+    body.options?.sourceFilter?.map(item => item.trim()).filter(Boolean) ?? [];
   const start = Date.now();
 
-  const hits = await searchChunks(runtime, query, topK, minScore);
+  const hits = await searchChunks(runtime, query, topK, minScore, sourceFilter);
 
   if (hits.length === 0) {
     return Response.json({
       answer:
-        'No indexed documents found. Ingest files first, then retry your question.',
+        sourceFilter.length > 0
+          ? 'No matches found in the selected document scope. Broaden the scope or ingest more files.'
+          : 'No indexed documents found. Ingest files first, then retry your question.',
       citations: [],
       retrieval: {
         topK,

@@ -57,6 +57,29 @@ type ChatResponse = {
   warnings?: string[];
 };
 
+type IndexedDocument = {
+  source: string;
+  chunks: number;
+  lastIndexedAt: string | null;
+};
+
+type IndexedDocumentsResponse = {
+  documents: IndexedDocument[];
+  totals: {
+    documentsIndexed: number;
+    chunksIndexed: number;
+  };
+};
+
+type ChatMessage = {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  citations?: ChatResponse['citations'];
+  warnings?: string[];
+  retrieval?: ChatResponse['retrieval'];
+};
+
 const SUGGESTED_LM_MODELS = [
   'qwen2.5-7b-instruct',
   'llama-3.1-8b-instruct',
@@ -81,6 +104,17 @@ async function parseApiResponse<T>(res: Response): Promise<T> {
   }
 }
 
+function formatDateTime(value: string | null): string {
+  if (!value) return 'unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
+function makeMessageId(): string {
+  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 export default function Week2LocalRag() {
   const [runtime, setRuntime] = useState<RuntimeName>('foundry');
   const [modelId, setModelId] = useState('phi-4-mini-reasoning');
@@ -93,9 +127,19 @@ export default function Week2LocalRag() {
   const [ingestResult, setIngestResult] = useState<IngestResponse | null>(null);
   const [ingestError, setIngestError] = useState<string | null>(null);
 
+  const [indexedDocuments, setIndexedDocuments] = useState<IndexedDocument[]>([]);
+  const [totals, setTotals] = useState<{ documentsIndexed: number; chunksIndexed: number }>({
+    documentsIndexed: 0,
+    chunksIndexed: 0,
+  });
+  const [dbError, setDbError] = useState<string | null>(null);
+  const [loadingDb, setLoadingDb] = useState(false);
+  const [selectedSources, setSelectedSources] = useState<string[]>([]);
+
   const [query, setQuery] = useState('');
-  const [chatResult, setChatResult] = useState<ChatResponse | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [chatLoading, setChatLoading] = useState(false);
 
   const selectedModelInfo = useMemo(
     () => models.find(model => model.id === modelId),
@@ -140,9 +184,41 @@ export default function Week2LocalRag() {
     }
   }, [runtime, modelId]);
 
+  const refreshDatabase = useCallback(async () => {
+    setLoadingDb(true);
+    setDbError(null);
+    try {
+      const res = await fetch('/api/indexed-documents', { cache: 'no-store' });
+      const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
+      if (!res.ok) {
+        setDbError(data.error || 'Failed to load database state');
+        return;
+      }
+
+      setIndexedDocuments(data.documents ?? []);
+      setTotals(
+        data.totals ?? {
+          documentsIndexed: data.documents?.length ?? 0,
+          chunksIndexed: 0,
+        },
+      );
+      setSelectedSources(current =>
+        current.filter(source => data.documents.some(item => item.source === source)),
+      );
+    } catch (error) {
+      setDbError(error instanceof Error ? error.message : 'Failed to load database state');
+    } finally {
+      setLoadingDb(false);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshModels();
   }, [refreshModels]);
+
+  useEffect(() => {
+    void refreshDatabase();
+  }, [refreshDatabase]);
 
   useEffect(() => {
     if (!activeJob) return;
@@ -248,6 +324,7 @@ export default function Week2LocalRag() {
       }
 
       setIngestResult(data);
+      await refreshDatabase();
     } catch (error) {
       setIngestError(error instanceof Error ? error.message : 'Ingest failed');
     }
@@ -255,12 +332,22 @@ export default function Week2LocalRag() {
 
   const ask = async () => {
     setChatError(null);
-    setChatResult(null);
 
-    if (!query.trim()) {
+    const trimmedQuery = query.trim();
+    if (!trimmedQuery) {
       setChatError('Enter a question first.');
       return;
     }
+
+    const userMessage: ChatMessage = {
+      id: makeMessageId(),
+      role: 'user',
+      text: trimmedQuery,
+    };
+
+    setChatMessages(current => [...current, userMessage]);
+    setQuery('');
+    setChatLoading(true);
 
     try {
       const res = await fetch('/api/chat', {
@@ -269,8 +356,13 @@ export default function Week2LocalRag() {
         body: JSON.stringify({
           runtime,
           modelId,
-          query,
-          options: { topK: 5, minScore: 0.2, temperature: 0.2 },
+          query: trimmedQuery,
+          options: {
+            topK: 5,
+            minScore: 0.2,
+            temperature: 0.2,
+            sourceFilter: selectedSources.length > 0 ? selectedSources : undefined,
+          },
         }),
       });
 
@@ -280,236 +372,385 @@ export default function Week2LocalRag() {
         return;
       }
 
-      setChatResult(data);
+      const assistantMessage: ChatMessage = {
+        id: makeMessageId(),
+        role: 'assistant',
+        text: data.answer,
+        citations: data.citations,
+        warnings: data.warnings,
+        retrieval: data.retrieval,
+      };
+      setChatMessages(current => [...current, assistantMessage]);
     } catch (error) {
       setChatError(error instanceof Error ? error.message : 'Chat failed');
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const toggleSource = (source: string) => {
+    setSelectedSources(current =>
+      current.includes(source)
+        ? current.filter(item => item !== source)
+        : [...current, source],
+    );
+  };
+
+  const clearSourceSelection = () => {
+    setSelectedSources([]);
+  };
+
+  const deleteSource = async (source: string) => {
+    setDbError(null);
+    try {
+      const res = await fetch('/api/indexed-documents', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source }),
+      });
+
+      const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
+      if (!res.ok) {
+        setDbError(data.error || 'Delete failed');
+        return;
+      }
+
+      setIndexedDocuments(data.documents ?? []);
+      setTotals(data.totals ?? { documentsIndexed: 0, chunksIndexed: 0 });
+      setSelectedSources(current => current.filter(item => item !== source));
+    } catch (error) {
+      setDbError(error instanceof Error ? error.message : 'Delete failed');
+    }
+  };
+
+  const deleteAll = async () => {
+    if (!window.confirm('Delete all indexed documents from Chroma?')) return;
+
+    setDbError(null);
+    try {
+      const res = await fetch('/api/indexed-documents', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deleteAll: true }),
+      });
+
+      const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
+      if (!res.ok) {
+        setDbError(data.error || 'Delete all failed');
+        return;
+      }
+
+      setIndexedDocuments(data.documents ?? []);
+      setTotals(data.totals ?? { documentsIndexed: 0, chunksIndexed: 0 });
+      setSelectedSources([]);
+    } catch (error) {
+      setDbError(error instanceof Error ? error.message : 'Delete all failed');
     }
   };
 
   return (
     <main className="app-shell">
       <div className="ambient-glow" />
-      <div className="content-wrap">
-        <header className="hero">
-          <p className="eyebrow">Week 2 Local RAG Studio</p>
-          <h1>Model control + ingestion + grounded Q&A (Foundry-first).</h1>
-          <p className="hero-copy">
-            Foundry runtime shows only project-required models with downloaded status.
-          </p>
-        </header>
-
-        <section className="card">
-          <h2>Model Runtime Control</h2>
-          <div className="grid2">
-            <label>
-              Runtime
-              <select
-                value={runtime}
-                onChange={event => {
-                  const next = event.currentTarget.value as RuntimeName;
-                  setRuntime(next);
-                  setModelId(next === 'foundry' ? 'phi-4-mini-reasoning' : 'qwen2.5-7b-instruct');
-                }}
-              >
-                <option value="foundry">Microsoft Foundry Local (project default)</option>
-                <option value="lmstudio">LM Studio (alternate)</option>
-              </select>
-            </label>
-
-            <label>
-              Model ID
-              {runtime === 'foundry' ? (
-                <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
-                  {models.map(item => (
-                    <option key={item.id} value={item.id}>
-                      {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <>
-                  <input
-                    value={modelId}
-                    onChange={event => setModelId(event.currentTarget.value)}
-                    list="runtime-models"
-                  />
-                  <datalist id="runtime-models">
-                    {SUGGESTED_LM_MODELS.map(item => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                </>
-              )}
-            </label>
-          </div>
-
-          <div className="actions">
-            <button
-              className="btn-primary"
-              onClick={startDownload}
-              disabled={Boolean(activeJob) || isAlreadyDownloaded}
-            >
-              {activeJob ? 'Download Running...' : isAlreadyDownloaded ? 'Already Downloaded' : 'Download Model'}
-            </button>
-            <button className="btn-secondary" onClick={refreshModels} disabled={loadingModels}>
-              {loadingModels ? 'Refreshing...' : 'Refresh Models'}
-            </button>
-          </div>
-
-          {activeJob ? (
-            <p className="muted">
-              Active job `{activeJob.id}` using {activeJob.commandLabel ?? 'download command'}: {activeJob.status} ({activeJob.progress}%)
+      <div className="content-wrap split-layout">
+        <aside className="left-pane">
+          <header className="hero">
+            <p className="eyebrow">Week 2 Local RAG Studio</p>
+            <h1>RAG Workspace Controls</h1>
+            <p className="hero-copy">
+              Configure runtime, ingest documents, and manage indexed data. Use scope selection to chat against specific files.
             </p>
-          ) : null}
+          </header>
 
-          {latestJobForModel?.status === 'failed' ? (
-            <p className="panel-error">Download failed: {latestJobForModel.error || 'Unknown error'}</p>
-          ) : null}
+          <section className="card">
+            <h2>Model Runtime Control</h2>
+            <div className="grid2">
+              <label>
+                Runtime
+                <select
+                  value={runtime}
+                  onChange={event => {
+                    const next = event.currentTarget.value as RuntimeName;
+                    setRuntime(next);
+                    setModelId(next === 'foundry' ? 'phi-4-mini-reasoning' : 'qwen2.5-7b-instruct');
+                  }}
+                >
+                  <option value="foundry">Microsoft Foundry Local</option>
+                  <option value="lmstudio">LM Studio</option>
+                </select>
+              </label>
 
-          {warning ? <p className="panel-error">{warning}</p> : null}
+              <label>
+                Model ID
+                {runtime === 'foundry' ? (
+                  <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
+                    {models.map(item => (
+                      <option key={item.id} value={item.id}>
+                        {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <>
+                    <input
+                      value={modelId}
+                      onChange={event => setModelId(event.currentTarget.value)}
+                      list="runtime-models"
+                    />
+                    <datalist id="runtime-models">
+                      {SUGGESTED_LM_MODELS.map(item => (
+                        <option key={item} value={item} />
+                      ))}
+                    </datalist>
+                  </>
+                )}
+              </label>
+            </div>
 
-          <div className="list-block">
-            <h3>
-              {runtime === 'foundry' ? 'Project-required Foundry models' : 'Detected LM Studio models'}
-            </h3>
-            {models.length === 0 ? (
-              <p className="muted">No models available for this runtime yet.</p>
+            <div className="actions">
+              <button
+                className="btn-primary"
+                onClick={startDownload}
+                disabled={Boolean(activeJob) || isAlreadyDownloaded}
+              >
+                {activeJob ? 'Download Running...' : isAlreadyDownloaded ? 'Already Downloaded' : 'Download Model'}
+              </button>
+              <button className="btn-secondary" onClick={refreshModels} disabled={loadingModels}>
+                {loadingModels ? 'Refreshing...' : 'Refresh Models'}
+              </button>
+            </div>
+
+            {activeJob ? (
+              <p className="muted">
+                Job `{activeJob.id}` using {activeJob.commandLabel ?? 'download command'}: {activeJob.status} ({activeJob.progress}%)
+              </p>
+            ) : null}
+            {latestJobForModel?.status === 'failed' ? (
+              <p className="panel-error">Download failed: {latestJobForModel.error || 'Unknown error'}</p>
+            ) : null}
+            {warning ? <p className="panel-error">{warning}</p> : null}
+          </section>
+
+          <section className="card">
+            <h2>Manual Download & Docs</h2>
+            <p className="muted">
+              If auto download fails, run manual commands and refresh models.
+            </p>
+            <h3>Foundry Local</h3>
+            <pre className="code-block">foundry model download phi-4-mini-reasoning</pre>
+            <h3>LM Studio CLI</h3>
+            <pre className="code-block">lms get qwen2.5-7b-instruct --yes</pre>
+            <ul>
+              <li>
+                <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started" target="_blank" rel="noreferrer">
+                  Foundry Local - Get Started
+                </a>
+              </li>
+              <li>
+                <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/reference/reference-sdk" target="_blank" rel="noreferrer">
+                  Foundry Local - SDK/Reference
+                </a>
+              </li>
+              <li>
+                <a href="https://lmstudio.ai/docs" target="_blank" rel="noreferrer">
+                  LM Studio Documentation
+                </a>
+              </li>
+            </ul>
+          </section>
+
+          <section className="card">
+            <h2>Document Ingestion</h2>
+            <label>
+              Select files (.pdf, .md, .txt) - multiple allowed
+              <input
+                type="file"
+                multiple
+                accept=".pdf,.md,.txt,application/pdf,text/markdown,text/plain"
+                onChange={event => {
+                  const files = Array.from(event.currentTarget.files ?? []);
+                  setSelectedFiles(files);
+                }}
+              />
+            </label>
+
+            {selectedFiles.length > 0 ? (
+              <div className="list-block">
+                <h3>Selected files</h3>
+                <ul>
+                  {selectedFiles.map(file => (
+                    <li key={`${file.name}-${file.size}`}>
+                      {file.name} ({Math.max(1, Math.round(file.size / 1024))} KB)
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            <div className="actions">
+              <button className="btn-primary" onClick={ingest}>Ingest</button>
+            </div>
+            {ingestError ? <p className="panel-error">{ingestError}</p> : null}
+            {ingestResult ? (
+              <div className="list-block">
+                <p className={ingestResult.success ? 'muted' : 'panel-error'}>
+                  Indexed {ingestResult.documentsIndexed} document(s), {ingestResult.chunksIndexed} chunk(s).
+                </p>
+                {ingestResult.message ? <p className="panel-error">{ingestResult.message}</p> : null}
+                {ingestResult.skipped.length > 0 ? (
+                  <>
+                    <h3>Skipped files</h3>
+                    <ul>
+                      {ingestResult.skipped.map(item => (
+                        <li key={`${item.name}-${item.reason}`}>
+                          {item.name}: {SKIPPED_REASON_LABELS[item.reason] ?? item.reason}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {ingestResult.errors.length > 0 ? (
+                  <>
+                    <h3>Errors</h3>
+                    <ul>
+                      {ingestResult.errors.map(item => (
+                        <li key={`${item.name}-${item.message}`}>
+                          {item.name}: {item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
+          <section className="card">
+            <h2>Indexed Documents (Chroma)</h2>
+            <p className="muted">
+              Total: {totals.documentsIndexed} document(s), {totals.chunksIndexed} chunk(s)
+            </p>
+            <div className="actions">
+              <button className="btn-secondary" onClick={refreshDatabase} disabled={loadingDb}>
+                {loadingDb ? 'Refreshing...' : 'Refresh DB'}
+              </button>
+              <button className="btn-secondary" onClick={clearSourceSelection} disabled={selectedSources.length === 0}>
+                Clear Scope
+              </button>
+              <button className="btn-secondary" onClick={deleteAll} disabled={indexedDocuments.length === 0}>
+                Delete All
+              </button>
+            </div>
+
+            {dbError ? <p className="panel-error">{dbError}</p> : null}
+
+            {indexedDocuments.length === 0 ? (
+              <p className="muted">No indexed documents yet.</p>
             ) : (
-              <ul>
-                {models.map(item => (
-                  <li key={item.id}>
-                    <strong>{item.id}</strong> {item.downloaded ? '✅ Downloaded' : '⬇️ Not downloaded'}
-                  </li>
-                ))}
+              <ul className="doc-list">
+                {indexedDocuments.map(item => {
+                  const checked = selectedSources.includes(item.source);
+                  return (
+                    <li key={item.source} className="doc-item">
+                      <label className="doc-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSource(item.source)}
+                        />
+                        <span>
+                          <strong>{item.source}</strong>
+                          <small>
+                            {item.chunks} chunk(s), last indexed {formatDateTime(item.lastIndexedAt)}
+                          </small>
+                        </span>
+                      </label>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => void deleteSource(item.source)}
+                      >
+                        Delete
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
-          </div>
-        </section>
+          </section>
+        </aside>
 
-        <section className="card">
-          <h2>Manual Download & Documentation</h2>
-          <p className="muted">
-            If automatic download fails, run manual command in terminal and click <strong>Refresh Models</strong>.
-          </p>
-          <h3>Foundry Local (project default)</h3>
-          <pre className="code-block">foundry model download phi-4-mini-reasoning</pre>
-          <h3>LM Studio CLI</h3>
-          <pre className="code-block">lms get qwen2.5-7b-instruct --yes</pre>
-          <h3>Official docs</h3>
-          <ul>
-            <li>
-              <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started" target="_blank" rel="noreferrer">
-                Foundry Local - Get Started
-              </a>
-            </li>
-            <li>
-              <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/reference/reference-sdk" target="_blank" rel="noreferrer">
-                Foundry Local - SDK/Reference
-              </a>
-            </li>
-            <li>
-              <a href="https://lmstudio.ai/docs" target="_blank" rel="noreferrer">
-                LM Studio Documentation
-              </a>
-            </li>
-          </ul>
-        </section>
-
-        <section className="card">
-          <h2>Document Ingestion</h2>
-          <label>
-            Select files (.pdf, .md, .txt) - multiple allowed
-            <input
-              type="file"
-              multiple
-              accept=".pdf,.md,.txt,application/pdf,text/markdown,text/plain"
-              onChange={event => {
-                const files = Array.from(event.currentTarget.files ?? []);
-                setSelectedFiles(files);
-              }}
-            />
-          </label>
-
-          {selectedFiles.length > 0 ? (
-            <div className="list-block">
-              <h3>Selected files</h3>
-              <ul>
-                {selectedFiles.map(file => (
-                  <li key={`${file.name}-${file.size}`}>
-                    {file.name} ({Math.max(1, Math.round(file.size / 1024))} KB)
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-
-          <div className="actions">
-            <button className="btn-primary" onClick={ingest}>Ingest</button>
-          </div>
-          {ingestError ? <p className="panel-error">{ingestError}</p> : null}
-          {ingestResult ? (
-            <div className="list-block">
-              <p className={ingestResult.success ? 'muted' : 'panel-error'}>
-                Indexed {ingestResult.documentsIndexed} document(s), {ingestResult.chunksIndexed} chunk(s).
+        <section className="right-pane">
+          <div className="chat-shell">
+            <header className="chat-header">
+              <h2>Grounded Chat</h2>
+              <p className="muted">
+                Scope: {selectedSources.length > 0 ? `${selectedSources.length} selected document(s)` : 'All indexed documents'}
               </p>
-              {ingestResult.message ? <p className="panel-error">{ingestResult.message}</p> : null}
-              {ingestResult.skipped.length > 0 ? (
-                <>
-                  <h3>Skipped files</h3>
-                  <ul>
-                    {ingestResult.skipped.map(item => (
-                      <li key={`${item.name}-${item.reason}`}>
-                        {item.name}: {SKIPPED_REASON_LABELS[item.reason] ?? item.reason}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-              {ingestResult.errors.length > 0 ? (
-                <>
-                  <h3>Errors</h3>
-                  <ul>
-                    {ingestResult.errors.map(item => (
-                      <li key={`${item.name}-${item.message}`}>
-                        {item.name}: {item.message}
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </section>
+            </header>
 
-        <section className="card">
-          <h2>Grounded Chat</h2>
-          <label>
-            Ask a question
-            <textarea
-              rows={4}
-              value={query}
-              onChange={event => setQuery(event.currentTarget.value)}
-              placeholder="Ask a question based on indexed text..."
-            />
-          </label>
-          <div className="actions">
-            <button className="btn-primary" onClick={ask}>Ask</button>
+            <div className="chat-log">
+              {chatMessages.length === 0 ? (
+                <p className="muted empty-chat">
+                  Ask a question. Answers will appear here with citations.
+                </p>
+              ) : (
+                chatMessages.map(message => (
+                  <article
+                    key={message.id}
+                    className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}
+                  >
+                    <p className="chat-role">{message.role === 'user' ? 'You' : 'Assistant'}</p>
+                    <p className="answer">{message.text}</p>
+                    {message.citations && message.citations.length > 0 ? (
+                      <div className="citation-block">
+                        <h3>Citations</h3>
+                        <ul>
+                          {message.citations.map(item => (
+                            <li key={item.chunk_id}>
+                              {item.source} {item.page !== null ? `(page ${item.page})` : ''} - {item.chunk_id} (score {item.score.toFixed(3)})
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {message.warnings && message.warnings.length > 0 ? (
+                      <p className="muted">Warnings: {message.warnings.join(' | ')}</p>
+                    ) : null}
+                    {message.retrieval ? (
+                      <p className="muted">
+                        Retrieval: {message.retrieval.matched} hit(s), topK {message.retrieval.topK}, {message.retrieval.latencyMs} ms
+                      </p>
+                    ) : null}
+                  </article>
+                ))
+              )}
+            </div>
+
+            <div className="chat-composer">
+              <label>
+                Ask a question
+                <textarea
+                  rows={4}
+                  value={query}
+                  onChange={event => setQuery(event.currentTarget.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault();
+                      if (!chatLoading) {
+                        void ask();
+                      }
+                    }
+                  }}
+                  placeholder="Ask about your indexed files..."
+                />
+              </label>
+              <div className="actions">
+                <button className="btn-primary" onClick={ask} disabled={chatLoading}>
+                  {chatLoading ? 'Asking...' : 'Ask'}
+                </button>
+              </div>
+              {chatError ? <p className="panel-error">{chatError}</p> : null}
+            </div>
           </div>
-          {chatError ? <p className="panel-error">{chatError}</p> : null}
-
-          {chatResult ? (
-            <div className="result-block">
-              <p className="answer">{chatResult.answer}</p>
-              <h3>Citations</h3>
-              <ul>
-                {chatResult.citations.map(item => (
-                  <li key={item.chunk_id}>
-                    {item.source} {item.page !== null ? `(page ${item.page})` : ''} - {item.chunk_id} (score {item.score})
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
         </section>
       </div>
     </main>

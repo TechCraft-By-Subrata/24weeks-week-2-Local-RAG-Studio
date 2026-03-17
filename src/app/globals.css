@@ -23,10 +23,16 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-geist-sans), "Segoe UI", sans-serif;
+  margin: 0;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100vh;
   position: relative;
   overflow: hidden;
 }
@@ -44,9 +50,28 @@ body {
 
 .content-wrap {
   position: relative;
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 2.4rem 1rem 3rem;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 1.25rem 1rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.split-layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.left-pane,
+.right-pane {
+  min-width: 0;
+}
+
+.left-pane {
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+  min-height: 0;
 }
 
 .hero {
@@ -80,7 +105,7 @@ body {
   background: var(--surface);
   box-shadow: 0 16px 38px rgb(16 46 35 / 0.08);
   padding: 1rem;
-  margin-top: 1rem;
+  margin-top: 0;
 }
 
 .card h2 {
@@ -177,14 +202,156 @@ textarea:focus {
   margin-left: 1.2rem;
 }
 
+.doc-list {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+  list-style: none;
+  padding: 0;
+}
+
+.doc-item {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-muted);
+  padding: 0.55rem 0.6rem;
+}
+
+.doc-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  margin: 0;
+  color: var(--foreground);
+  font-weight: 520;
+}
+
+.doc-checkbox input {
+  width: auto;
+  margin-top: 0.15rem;
+}
+
+.doc-checkbox span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.doc-checkbox small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.chat-shell {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow: 0 16px 38px rgb(16 46 35 / 0.08);
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  overflow: hidden;
+}
+
+.chat-header {
+  padding: 1rem;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, #f5fbf9 0%, #ffffff 100%);
+}
+
+.chat-header h2 {
+  font-size: 1.08rem;
+  font-weight: 740;
+}
+
+.chat-log {
+  padding: 1rem;
+  overflow: auto;
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+  min-height: 0;
+}
+
+.empty-chat {
+  padding: 0.5rem;
+}
+
+.chat-message {
+  border-radius: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+}
+
+.chat-user {
+  background: #e4f6ef;
+}
+
+.chat-assistant {
+  background: #f8fcfb;
+}
+
+.chat-role {
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--brand-dark);
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+
+.citation-block h3 {
+  font-size: 0.84rem;
+  margin-top: 0.55rem;
+}
+
+.chat-composer {
+  border-top: 1px solid var(--border);
+  padding: 0.9rem 1rem 1rem;
+  background: #fbfefd;
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+}
+
 .answer {
   white-space: pre-wrap;
   line-height: 1.5;
 }
 
 @media (min-width: 900px) {
+  body {
+    overflow: hidden;
+  }
+
   .content-wrap {
-    padding: 3rem 1.4rem 3.6rem;
+    height: 100vh;
+    padding: 1rem;
+  }
+
+  .split-layout {
+    grid-template-columns: minmax(340px, 430px) minmax(0, 1fr);
+    align-items: stretch;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .left-pane {
+    height: 100%;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+  }
+
+  .right-pane {
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .grid2 {

@@ -11,6 +11,12 @@ export type IndexedChunk = {
   createdAt: string;
 };
 
+export type IndexedDocumentSummary = {
+  source: string;
+  chunks: number;
+  lastIndexedAt: string | null;
+};
+
 const CHROMA_COLLECTION_NAME = 'rag-studio-collection';
 
 let collection: Collection | null = null;
@@ -103,14 +109,25 @@ export async function ingestDocument(args: {
   return records;
 }
 
-export async function searchChunks(runtime: RuntimeName, query: string, topK: number, minScore: number) {
+export async function searchChunks(
+  runtime: RuntimeName,
+  query: string,
+  topK: number,
+  minScore: number,
+  sourceFilter?: string[],
+) {
   const queryEmbedding = await getEmbeddings(runtime, [query]);
   const collection = await getCollection();
+  const cleanSourceFilter = (sourceFilter ?? []).map(item => item.trim()).filter(Boolean);
 
   const results = await collection.query({
     queryEmbeddings: queryEmbedding,
     nResults: topK,
     include: ['documents', 'metadatas', 'distances'],
+    where:
+      cleanSourceFilter.length > 0
+        ? { source: { $in: cleanSourceFilter } }
+        : undefined,
   });
 
   const rows = results.rows();
@@ -148,6 +165,41 @@ export async function searchChunks(runtime: RuntimeName, query: string, topK: nu
   return filtered.length > 0 ? filtered : hits;
 }
 
+export async function listIndexedDocuments(): Promise<IndexedDocumentSummary[]> {
+  const collection = await getCollection();
+  const rows = await collection.get({ include: ['metadatas'], limit: 10_000 });
+  const bySource = new Map<string, IndexedDocumentSummary>();
+
+  for (let index = 0; index < rows.ids.length; index += 1) {
+    const metadata = rows.metadatas[index] as
+      | { source?: string; createdAt?: string }
+      | null
+      | undefined;
+    const source = metadata?.source;
+    if (!source) continue;
+
+    const createdAt = metadata?.createdAt ?? null;
+    const current = bySource.get(source);
+    if (!current) {
+      bySource.set(source, {
+        source,
+        chunks: 1,
+        lastIndexedAt: createdAt,
+      });
+      continue;
+    }
+
+    current.chunks += 1;
+    if (createdAt && (!current.lastIndexedAt || createdAt > current.lastIndexedAt)) {
+      current.lastIndexedAt = createdAt;
+    }
+  }
+
+  return Array.from(bySource.values()).sort((a, b) =>
+    a.source.localeCompare(b.source, undefined, { sensitivity: 'base' }),
+  );
+}
+
 export async function getIngestStats() {
   const collection = await getCollection();
   const rows = await collection.get({ include: ['metadatas'] });
@@ -169,4 +221,11 @@ export async function deleteAllDocuments() {
   const rows = await collection.get({ include: [] });
   if (rows.ids.length === 0) return;
   await collection.delete({ ids: rows.ids });
+}
+
+export async function deleteDocumentBySource(source: string) {
+  const clean = source.trim();
+  if (!clean) return;
+  const collection = await getCollection();
+  await collection.delete({ where: { source: clean } });
 }
