@@ -1,115 +1,76 @@
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createOpenAI } from '@ai-sdk/openai';
-import {
-  convertToModelMessages,
-  streamText,
-  type UIMessage,
-  type LanguageModel,
-} from 'ai';
+import { searchChunks } from '@/lib/rag-store';
 
-export const maxDuration = 30;
-
-type ProviderName = 'google' | 'openai' | 'anthropic';
-
-type PanelConfig = {
-  provider: ProviderName;
-  modelId: string;
-  apiKey?: string;
+type ChatRequest = {
+  query: string;
+  options?: {
+    topK?: number;
+    minScore?: number;
+    temperature?: number;
+    systemPrompt?: string;
+  };
 };
-
-type RequestOptions = {
-  systemPrompt?: string;
-  temperature?: number;
-};
-
-type ChatRequestBody = {
-  messages: UIMessage[];
-  panel: PanelConfig;
-  options?: RequestOptions;
-};
-
-function getModel(panel: PanelConfig): LanguageModel {
-  const modelId = panel.modelId.trim();
-  const apiKey = panel.apiKey?.trim();
-
-  if (!modelId) {
-    throw new Error('Model ID is required.');
-  }
-
-  if (panel.provider === 'google') {
-    const fallbackKey = process.env.GOOGLE_API_KEY?.trim();
-    const googleApiKey = apiKey || fallbackKey;
-
-    if (!googleApiKey) {
-      throw new Error(
-        'No Google API key found. Add GOOGLE_API_KEY to .env.local or provide one in the panel settings.',
-      );
-    }
-
-    const google = createGoogleGenerativeAI({ apiKey: googleApiKey });
-    return google(modelId);
-  }
-
-  if (!apiKey) {
-    throw new Error(
-      `API key is required for ${panel.provider}. Add a key in this panel before running.`,
-    );
-  }
-
-  if (panel.provider === 'openai') {
-    const openai = createOpenAI({ apiKey });
-    return openai(modelId);
-  }
-
-  const anthropic = createAnthropic({ apiKey });
-  return anthropic(modelId);
-}
-
-function asErrorResponse(message: string, status = 400): Response {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
 
 export async function POST(req: Request) {
-  let body: ChatRequestBody;
+  let body: ChatRequest;
 
   try {
-    body = (await req.json()) as ChatRequestBody;
+    body = (await req.json()) as ChatRequest;
   } catch {
-    return asErrorResponse('Invalid JSON request body.');
+    return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { messages, panel, options } = body;
-
-  if (!Array.isArray(messages)) {
-    return asErrorResponse('`messages` must be an array.');
+  const query = body.query?.trim();
+  if (!query) {
+    return Response.json({ error: 'query is required' }, { status: 400 });
   }
 
-  if (!panel || !panel.provider || !panel.modelId) {
-    return asErrorResponse(
-      '`panel` is required with provider and modelId fields.',
-    );
-  }
+  const topK = body.options?.topK ?? 5;
+  const minScore = body.options?.minScore ?? 0.2;
+  const start = Date.now();
 
-  try {
-    const model = getModel(panel);
+  const hits = await searchChunks(query, topK, minScore);
 
-    const result = streamText({
-      model,
-      system: options?.systemPrompt?.trim() || undefined,
-      temperature: options?.temperature,
-      messages: await convertToModelMessages(messages),
+  if (hits.length === 0) {
+    return Response.json({
+      answer:
+        'No indexed documents found. Ingest files first, then retry your question.',
+      citations: [],
+      retrieval: {
+        topK,
+        matched: 0,
+        latencyMs: Date.now() - start,
+      },
+      warnings: ['no_indexed_chunks'],
     });
-
-    return result.toUIMessageStreamResponse({
-      originalMessages: messages,
-    });
-  } catch (error) {
-    const details =
-      error instanceof Error ? error.message : 'Unknown model execution error.';
-    return asErrorResponse(details, 500);
   }
+
+  const citations = hits.map(item => ({
+    source: item.source,
+    page: item.page,
+    chunk_id: item.id,
+    snippet: item.text.slice(0, 220),
+    score: item.score,
+  }));
+
+  const answer = [
+    'Grounded answer (prototype):',
+    ...hits.map(
+      (item, index) =>
+        `[${index + 1}] ${item.text.slice(0, 260).trim()} (${item.source})`,
+    ),
+  ].join('\n\n');
+
+  return Response.json({
+    answer,
+    citations,
+    retrieval: {
+      topK,
+      matched: hits.length,
+      latencyMs: Date.now() - start,
+    },
+    warnings:
+      hits.length < 2
+        ? ['low_retrieval_confidence_only_one_chunk_matched']
+        : undefined,
+  });
 }

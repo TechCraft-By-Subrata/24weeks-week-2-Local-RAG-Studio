@@ -1,15 +1,15 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f3f7f5;
+  --background: #f4f8f7;
   --surface: #ffffff;
-  --surface-muted: #f7fbf9;
-  --foreground: #0f1e1a;
-  --muted: #5e716b;
-  --border: #d5e4de;
-  --brand: #1c8f63;
-  --brand-dark: #136445;
-  --danger: #c33d3d;
+  --surface-muted: #f6fbfa;
+  --foreground: #10211c;
+  --muted: #5a7168;
+  --border: #d1e4dd;
+  --brand: #0a7f57;
+  --brand-dark: #0b5e41;
+  --danger: #b73e3e;
 }
 
 @theme inline {
@@ -35,22 +35,22 @@ body {
   position: absolute;
   inset: -25%;
   background:
-    radial-gradient(circle at 12% 25%, #8ed9b9 0, transparent 35%),
-    radial-gradient(circle at 85% 10%, #d5f2d8 0, transparent 38%),
-    radial-gradient(circle at 50% 90%, #b8e4d4 0, transparent 34%);
-  opacity: 0.8;
+    radial-gradient(circle at 14% 22%, #9fe6c5 0, transparent 32%),
+    radial-gradient(circle at 87% 12%, #d9f6e5 0, transparent 38%),
+    radial-gradient(circle at 48% 88%, #b8e9d1 0, transparent 33%);
+  opacity: 0.85;
   pointer-events: none;
 }
 
 .content-wrap {
   position: relative;
-  max-width: 1180px;
+  max-width: 1120px;
   margin: 0 auto;
-  padding: 2.5rem 1rem 3rem;
+  padding: 2.4rem 1rem 3rem;
 }
 
 .hero {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.2rem;
 }
 
 .eyebrow {
@@ -63,209 +63,147 @@ body {
 }
 
 .hero h1 {
-  font-size: clamp(1.5rem, 4vw, 2.35rem);
+  font-size: clamp(1.45rem, 3.6vw, 2.3rem);
   line-height: 1.1;
-  font-weight: 750;
-  margin-bottom: 0.6rem;
+  font-weight: 760;
+  margin-bottom: 0.55rem;
 }
 
 .hero-copy {
   max-width: 58rem;
   color: var(--muted);
-  font-size: 1rem;
 }
 
-.composer-card {
+.card {
   border: 1px solid var(--border);
   border-radius: 1rem;
-  padding: 1rem;
-  background: color-mix(in oklab, var(--surface) 92%, #d5efe2 8%);
-  backdrop-filter: blur(5px);
-  box-shadow: 0 24px 60px rgb(28 54 41 / 0.08);
-}
-
-.composer-grid {
-  display: grid;
-  gap: 1rem;
-}
-
-.prompt-box,
-.composer-card input,
-.panel-config input,
-.panel-config select {
-  width: 100%;
-  border-radius: 0.75rem;
-  border: 1px solid var(--border);
   background: var(--surface);
-  color: var(--foreground);
-  padding: 0.75rem 0.9rem;
-  outline: none;
+  box-shadow: 0 16px 38px rgb(16 46 35 / 0.08);
+  padding: 1rem;
+  margin-top: 1rem;
 }
 
-.prompt-box:focus,
-.composer-card input:focus,
-.panel-config input:focus,
-.panel-config select:focus {
-  border-color: var(--brand);
-  box-shadow: 0 0 0 3px rgb(28 143 99 / 0.14);
+.card h2 {
+  font-size: 1.05rem;
+  font-weight: 740;
+  margin-bottom: 0.75rem;
 }
 
-.options-column {
-  display: grid;
-  gap: 0.8rem;
+.card h3 {
+  font-size: 0.95rem;
+  font-weight: 650;
+  margin: 0.75rem 0 0.35rem;
 }
 
 label {
   display: grid;
   gap: 0.35rem;
-  font-size: 0.86rem;
+  font-size: 0.88rem;
   color: var(--muted);
-  font-weight: 550;
+  font-weight: 570;
 }
 
-.action-row {
+input,
+select,
+textarea {
+  width: 100%;
+  border-radius: 0.7rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  padding: 0.7rem 0.85rem;
+  outline: none;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgb(10 127 87 / 0.15);
+}
+
+.grid2 {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.actions {
   display: flex;
   gap: 0.6rem;
-  align-items: center;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
 }
 
 .btn-primary,
 .btn-secondary {
   border-radius: 0.75rem;
-  padding: 0.7rem 0.95rem;
+  padding: 0.65rem 0.95rem;
   font-size: 0.9rem;
   font-weight: 650;
   border: 1px solid transparent;
-  transition: all 120ms ease;
 }
 
 .btn-primary {
   background: linear-gradient(135deg, var(--brand), var(--brand-dark));
-  color: #f7fffc;
+  color: #f8fffd;
 }
 
-.btn-primary:disabled {
+.btn-primary:disabled,
+.btn-secondary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
 .btn-secondary {
-  background: var(--surface);
-  color: var(--foreground);
+  background: var(--surface-muted);
   border-color: var(--border);
+  color: var(--foreground);
 }
 
-.btn-secondary:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.panel-grid {
-  margin-top: 1rem;
-  display: grid;
-  gap: 1rem;
-}
-
-.panel-card {
-  border: 1px solid var(--border);
-  border-radius: 1rem;
-  background: var(--surface);
-  box-shadow: 0 18px 40px rgb(17 47 34 / 0.08);
-  min-height: 520px;
-  display: flex;
-  flex-direction: column;
-}
-
-.panel-head {
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
-  padding: 0.9rem 1rem;
-}
-
-.panel-head h2 {
-  font-size: 1rem;
-  font-weight: 700;
-}
-
-.status-pill {
-  border-radius: 9999px;
-  padding: 0.2rem 0.6rem;
-  font-size: 0.73rem;
-  font-weight: 700;
-  background: var(--surface-muted);
+.muted {
   color: var(--muted);
-}
-
-.status-submitted,
-.status-streaming {
-  background: #dff4ea;
-  color: #186a4a;
-}
-
-.status-error {
-  background: #ffe4e4;
-  color: #992727;
-}
-
-.panel-config {
-  border-bottom: 1px solid var(--border);
-  padding: 0.9rem 1rem;
-  display: grid;
-  gap: 0.75rem;
-  background: var(--surface-muted);
-}
-
-.panel-output {
-  padding: 1rem;
-  white-space: pre-wrap;
-  overflow: auto;
-  flex: 1;
-  line-height: 1.55;
-  font-size: 0.95rem;
-}
-
-.panel-empty {
-  color: var(--muted);
+  margin-top: 0.6rem;
 }
 
 .panel-error {
   color: var(--danger);
-  margin-bottom: 0.75rem;
+  margin-top: 0.6rem;
+  white-space: pre-wrap;
 }
 
-.comparison-card {
-  margin-top: 1rem;
-  border: 1px solid var(--border);
-  border-radius: 1rem;
-  background: color-mix(in oklab, var(--surface) 95%, #e7f8f0 5%);
-  box-shadow: 0 16px 34px rgb(17 47 34 / 0.08);
-  padding: 1rem;
+.list-block ul,
+.result-block ul {
+  list-style: disc;
+  margin-left: 1.2rem;
 }
 
-.comparison-card h3 {
-  font-size: 1.05rem;
-  font-weight: 750;
-  margin-bottom: 0.6rem;
-}
-
-.comparison-card p {
-  margin-bottom: 0.35rem;
+.answer {
+  white-space: pre-wrap;
   line-height: 1.5;
 }
 
-@media (min-width: 980px) {
+@media (min-width: 900px) {
   .content-wrap {
-    padding: 3.2rem 1.5rem 3.5rem;
+    padding: 3rem 1.4rem 3.6rem;
   }
 
-  .composer-grid {
-    grid-template-columns: 1.6fr 1fr;
-  }
-
-  .panel-grid {
+  .grid2 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.code-block {
+  background: #0f1e1a;
+  color: #ecfff7;
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  margin-top: 0.35rem;
+  overflow-x: auto;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+a {
+  color: var(--brand-dark);
+  text-decoration: underline;
 }

@@ -1,5 +1,5 @@
 {
-  "name": "sidebyside",
+  "name": "local-rag-studio",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -14,13 +14,16 @@
     "@ai-sdk/openai": "^3.0.41",
     "@ai-sdk/react": "^3.0.118",
     "ai": "^6.0.116",
+    "chromadb": "^3.3.3",
     "next": "16.1.6",
+    "pdf-parse": "^1.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
+    "@types/pdf-parse": "^1.1.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",

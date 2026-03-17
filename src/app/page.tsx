@@ -1,468 +1,513 @@
 'use client';
 
-import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, type UIMessage } from 'ai';
-import { useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-type ProviderName = 'google' | 'openai' | 'anthropic';
+type RuntimeName = 'foundry' | 'lmstudio';
 
-type PanelConfig = {
-  provider: ProviderName;
+type RuntimeModel = {
+  id: string;
+  provider: RuntimeName;
+  downloaded: boolean;
+  size?: string;
+  source?: string;
+};
+
+type ModelJob = {
+  id: string;
+  runtime: RuntimeName;
   modelId: string;
-  apiKey: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  progress: number;
+  log: string;
+  error?: string;
+  updatedAt: number;
+  commandLabel?: string;
 };
 
-type EvaluatorOptions = {
-  systemPrompt: string;
-  temperature: number;
+type ModelResponse = {
+  runtime: RuntimeName;
+  models: RuntimeModel[];
+  warning?: string;
+  jobs: ModelJob[];
 };
 
-const PROVIDER_MODEL_SUGGESTIONS: Record<ProviderName, string[]> = {
-  google: [
-    'gemini-2.5-pro',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-    'gemini-3-flash-preview',
-    'gemini-3.1-flash-lite-preview',
-  ],
-  openai: ['gpt-4.1-mini', 'gpt-4o-mini'],
-  anthropic: ['claude-3-5-haiku-latest', 'claude-3-7-sonnet-latest'],
+type IngestResponse = {
+  success: boolean;
+  documentsIndexed: number;
+  chunksIndexed: number;
+  skipped: Array<{ name: string; reason: string }>;
+  errors: Array<{ name: string; message: string }>;
+  message?: string;
 };
 
-const LEFT_PANEL_DEFAULT: PanelConfig = {
-  provider: 'google',
-  modelId: 'gemini-2.5-flash-lite',
-  apiKey: '',
-};
-
-const RIGHT_PANEL_DEFAULT: PanelConfig = {
-  provider: 'google',
-  modelId: 'gemini-2.5-flash',
-  apiKey: '',
-};
-
-const DEFAULT_OPTIONS: EvaluatorOptions = {
-  systemPrompt: '',
-  temperature: 0.7,
-};
-
-function getAssistantText(messages: UIMessage[]): string {
-  const lastAssistantMessage = [...messages]
-    .reverse()
-    .find(message => message.role === 'assistant');
-
-  if (!lastAssistantMessage) {
-    return '';
-  }
-
-  return lastAssistantMessage.parts
-    .filter(part => part.type === 'text')
-    .map(part => part.text)
-    .join('');
-}
-
-function getStatusText(status: string): string {
-  if (status === 'submitted') {
-    return 'Queued';
-  }
-
-  if (status === 'streaming') {
-    return 'Streaming';
-  }
-
-  if (status === 'error') {
-    return 'Error';
-  }
-
-  return 'Ready';
-}
-
-function isBusyStatus(status: string): boolean {
-  return status === 'submitted' || status === 'streaming';
-}
-
-type ComparisonReport = {
-  summary: string;
-  winner: string;
-  reliability: string;
-  quality: string;
-  action: string;
-};
-
-function getComparisonReport({
-  leftText,
-  rightText,
-  leftError,
-  rightError,
-}: {
-  leftText: string;
-  rightText: string;
-  leftError?: string;
-  rightError?: string;
-}): ComparisonReport {
-  const leftOk = Boolean(leftText) && !leftError;
-  const rightOk = Boolean(rightText) && !rightError;
-
-  if (leftOk && rightOk) {
-    const leftLen = leftText.length;
-    const rightLen = rightText.length;
-    const winner =
-      leftLen === rightLen
-        ? 'Tie'
-        : leftLen > rightLen
-          ? 'Left model (more detailed response)'
-          : 'Right model (more detailed response)';
-
-    return {
-      summary: 'Both models returned successfully.',
-      winner,
-      reliability: 'Both runs completed without provider errors.',
-      quality:
-        'Compare factual accuracy and relevance manually, since automatic truth scoring is not enabled yet.',
-      action:
-        'If you want strict quality scoring, add a judge model pass in the next iteration.',
-    };
-  }
-
-  if (leftOk && !rightOk) {
-    return {
-      summary: 'Partial success: left model succeeded, right model failed.',
-      winner: 'Left model by availability',
-      reliability: `Right model failed with provider error: ${rightError ?? 'Unknown error'}`,
-      quality:
-        'Only one valid answer is available, so quality comparison is incomplete.',
-      action:
-        'Retry right model with a different model ID or project key/quota configuration.',
-    };
-  }
-
-  if (!leftOk && rightOk) {
-    return {
-      summary: 'Partial success: right model succeeded, left model failed.',
-      winner: 'Right model by availability',
-      reliability: `Left model failed with provider error: ${leftError ?? 'Unknown error'}`,
-      quality:
-        'Only one valid answer is available, so quality comparison is incomplete.',
-      action:
-        'Retry left model with a different model ID or project key/quota configuration.',
-    };
-  }
-
-  return {
-    summary: 'Both model runs failed.',
-    winner: 'No winner',
-    reliability:
-      'Provider-side errors blocked both outputs. Check API keys, quota, and selected model availability.',
-    quality:
-      'No response content available to compare on quality or completeness.',
-    action: 'Fix provider errors, then rerun the same prompt.',
+type ChatResponse = {
+  answer: string;
+  citations: Array<{
+    source: string;
+    page: number | null;
+    chunk_id: string;
+    snippet: string;
+    score: number;
+  }>;
+  retrieval: {
+    topK: number;
+    matched: number;
+    latencyMs: number;
   };
-}
-
-type PanelProps = {
-  title: string;
-  config: PanelConfig;
-  setConfig: (next: PanelConfig) => void;
-  status: string;
-  assistantText: string;
-  errorText?: string;
+  warnings?: string[];
 };
 
-function ComparisonPanel({
-  title,
-  config,
-  setConfig,
-  status,
-  assistantText,
-  errorText,
-}: PanelProps) {
-  const modelDatalistId = useMemo(
-    () => `${title.toLowerCase().replace(/\s+/g, '-')}-models`,
-    [title],
-  );
+const SUGGESTED_LM_MODELS = [
+  'qwen2.5-7b-instruct',
+  'llama-3.1-8b-instruct',
+  'qwen2.5-coder-7b-instruct',
+];
 
-  return (
-    <article className="panel-card">
-      <header className="panel-head">
-        <h2>{title}</h2>
-        <span className={`status-pill status-${status}`}>{getStatusText(status)}</span>
-      </header>
+const SKIPPED_REASON_LABELS: Record<string, string> = {
+  unsupported_mime_type: 'Unsupported file type',
+  empty_text: 'No extractable text found (common with scanned/image-only PDFs)',
+  no_chunks_generated: 'Text found, but no chunks were generated',
+};
 
-      <div className="panel-config">
-        <label>
-          Provider
-          <select
-            value={config.provider}
-            onChange={event =>
-              setConfig({
-                ...config,
-                provider: event.currentTarget.value as ProviderName,
-              })
-            }
-          >
-            <option value="google">Google (Gemini)</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-          </select>
-        </label>
-
-        <label>
-          Model ID
-          <input
-            value={config.modelId}
-            list={modelDatalistId}
-            onChange={event =>
-              setConfig({ ...config, modelId: event.currentTarget.value })
-            }
-            placeholder="Enter model ID"
-          />
-          <datalist id={modelDatalistId}>
-            {PROVIDER_MODEL_SUGGESTIONS[config.provider].map(modelId => (
-              <option key={modelId} value={modelId} />
-            ))}
-          </datalist>
-        </label>
-
-        <label>
-          API key {config.provider === 'google' ? '(optional override)' : '(required)'}
-          <input
-            value={config.apiKey}
-            onChange={event =>
-              setConfig({ ...config, apiKey: event.currentTarget.value })
-            }
-            placeholder={
-              config.provider === 'google'
-                ? 'Uses GOOGLE_API_KEY by default'
-                : `Enter ${config.provider} key`
-            }
-            type="password"
-            autoComplete="off"
-          />
-        </label>
-      </div>
-
-      <section className="panel-output">
-        {errorText ? <p className="panel-error">{errorText}</p> : null}
-        {!assistantText && !errorText ? (
-          <p className="panel-empty">
-            Response will appear here after you run an evaluation.
-          </p>
-        ) : null}
-        {assistantText ? <p>{assistantText}</p> : null}
-      </section>
-    </article>
-  );
+async function parseApiResponse<T>(res: Response): Promise<T> {
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    const snippet = raw.slice(0, 220).replace(/\s+/g, ' ').trim();
+    throw new Error(
+      `Server returned non-JSON response (${res.status} ${res.statusText}). ${snippet || 'No response body.'}`,
+    );
+  }
 }
 
-export default function MultiModelEvaluator() {
-  const [prompt, setPrompt] = useState('');
-  const [leftPanel, setLeftPanel] = useState<PanelConfig>(LEFT_PANEL_DEFAULT);
-  const [rightPanel, setRightPanel] = useState<PanelConfig>(RIGHT_PANEL_DEFAULT);
-  const [options, setOptions] = useState<EvaluatorOptions>(DEFAULT_OPTIONS);
+export default function Week2LocalRag() {
+  const [runtime, setRuntime] = useState<RuntimeName>('foundry');
+  const [modelId, setModelId] = useState('phi-4-mini-reasoning');
+  const [models, setModels] = useState<RuntimeModel[]>([]);
+  const [jobs, setJobs] = useState<ModelJob[]>([]);
+  const [warning, setWarning] = useState<string | undefined>();
+  const [loadingModels, setLoadingModels] = useState(false);
 
-  const {
-    messages: leftMessages,
-    sendMessage: sendLeft,
-    status: leftStatus,
-    stop: stopLeft,
-    error: leftError,
-    clearError: clearLeftError,
-  } = useChat({
-    transport: new DefaultChatTransport({
-      api: '/api/chat',
-    }),
-  });
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [ingestResult, setIngestResult] = useState<IngestResponse | null>(null);
+  const [ingestError, setIngestError] = useState<string | null>(null);
 
-  const {
-    messages: rightMessages,
-    sendMessage: sendRight,
-    status: rightStatus,
-    stop: stopRight,
-    error: rightError,
-    clearError: clearRightError,
-  } = useChat({
-    transport: new DefaultChatTransport({
-      api: '/api/chat',
-    }),
-  });
+  const [query, setQuery] = useState('');
+  const [chatResult, setChatResult] = useState<ChatResponse | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
 
-  const isRunning = isBusyStatus(leftStatus) || isBusyStatus(rightStatus);
+  const selectedModelInfo = useMemo(
+    () => models.find(model => model.id === modelId),
+    [models, modelId],
+  );
+  const isAlreadyDownloaded = Boolean(selectedModelInfo?.downloaded);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const activeJob = useMemo(
+    () =>
+      jobs.find(
+        job =>
+          job.modelId === modelId &&
+          (job.status === 'queued' || job.status === 'running'),
+      ),
+    [jobs, modelId],
+  );
 
-    const promptText = prompt.trim();
-    if (!promptText) {
+  const latestJobForModel = useMemo(
+    () => jobs.find(job => job.modelId === modelId),
+    [jobs, modelId],
+  );
+
+  const refreshModels = useCallback(async () => {
+    setLoadingModels(true);
+    try {
+      const res = await fetch(`/api/models?runtime=${runtime}`, { cache: 'no-store' });
+      const data = await parseApiResponse<ModelResponse>(res);
+      setModels(data.models ?? []);
+      setJobs(data.jobs ?? []);
+      setWarning(data.warning);
+
+      if (runtime === 'foundry' && data.models?.length) {
+        const hasCurrent = data.models.some(item => item.id === modelId);
+        if (!hasCurrent) {
+          setModelId(data.models[0].id);
+        }
+      }
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : 'Could not fetch models');
+    } finally {
+      setLoadingModels(false);
+    }
+  }, [runtime, modelId]);
+
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  useEffect(() => {
+    if (!activeJob) return;
+
+    const timer = setInterval(() => {
+      void refreshModels();
+    }, 1800);
+
+    return () => clearInterval(timer);
+  }, [activeJob, refreshModels]);
+
+  const startDownload = async () => {
+    setWarning(undefined);
+
+    if (isAlreadyDownloaded) {
+      setWarning('This model is already downloaded. Select a model marked Not downloaded.');
       return;
     }
 
-    clearLeftError();
-    clearRightError();
+    try {
+      const res = await fetch('/api/models/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runtime, modelId }),
+      });
 
-    const requestOptions = {
+      const data = await parseApiResponse<{ job?: ModelJob; error?: string }>(res);
+      if (!res.ok) {
+        setWarning(data.error || 'Failed to start download');
+        return;
+      }
+
+      await refreshModels();
+    } catch (error) {
+      setWarning(error instanceof Error ? error.message : 'Failed to start download');
+    }
+  };
+
+  const ingest = async () => {
+    setIngestError(null);
+    setIngestResult(null);
+
+    if (selectedFiles.length === 0) {
+      setIngestError('Please select one or more .pdf, .md, or .txt files first.');
+      return;
+    }
+
+    const filesPayload = await Promise.all(
+      selectedFiles.map(async file => {
+        const lower = file.name.toLowerCase();
+        const mimeType = lower.endsWith('.pdf')
+          ? 'application/pdf'
+          : lower.endsWith('.md') || file.type === 'text/markdown'
+            ? 'text/markdown'
+            : 'text/plain';
+
+        const contentBase64 =
+          mimeType === 'application/pdf'
+            ? await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const result = reader.result;
+                  if (typeof result !== 'string') {
+                    reject(new Error('Could not read PDF file.'));
+                    return;
+                  }
+                  const encoded = result.split(',')[1] || '';
+                  resolve(encoded);
+                };
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(file);
+              })
+            : btoa(unescape(encodeURIComponent(await file.text())));
+
+        return {
+          name: file.name,
+          mimeType,
+          contentBase64,
+        };
+      }),
+    );
+
+    const payload = {
+      files: filesPayload,
       options: {
-        systemPrompt: options.systemPrompt.trim() || undefined,
-        temperature: options.temperature,
+        chunkSize: 800,
+        chunkOverlap: 120,
       },
     };
 
-    sendLeft(
-      { text: promptText },
-      {
-        body: {
-          panel: {
-            provider: leftPanel.provider,
-            modelId: leftPanel.modelId.trim(),
-            apiKey: leftPanel.apiKey.trim() || undefined,
-          },
-          ...requestOptions,
-        },
-      },
-    );
+    try {
+      const res = await fetch('/api/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-    sendRight(
-      { text: promptText },
-      {
-        body: {
-          panel: {
-            provider: rightPanel.provider,
-            modelId: rightPanel.modelId.trim(),
-            apiKey: rightPanel.apiKey.trim() || undefined,
-          },
-          ...requestOptions,
-        },
-      },
-    );
+      const data = await parseApiResponse<IngestResponse & { error?: string }>(res);
+      if (!res.ok) {
+        setIngestError(data.error || 'Ingest failed');
+        return;
+      }
 
-    setPrompt('');
+      setIngestResult(data);
+    } catch (error) {
+      setIngestError(error instanceof Error ? error.message : 'Ingest failed');
+    }
   };
 
-  const handleStop = () => {
-    stopLeft();
-    stopRight();
-  };
+  const ask = async () => {
+    setChatError(null);
+    setChatResult(null);
 
-  const leftAssistantText = getAssistantText(leftMessages);
-  const rightAssistantText = getAssistantText(rightMessages);
-  const report = getComparisonReport({
-    leftText: leftAssistantText,
-    rightText: rightAssistantText,
-    leftError: leftError?.message,
-    rightError: rightError?.message,
-  });
-  const shouldShowReport =
-    !isRunning &&
-    Boolean(
-      leftAssistantText ||
-        rightAssistantText ||
-        leftError?.message ||
-        rightError?.message,
-    );
+    if (!query.trim()) {
+      setChatError('Enter a question first.');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query,
+          options: { topK: 5, minScore: 0.2, temperature: 0.2 },
+        }),
+      });
+
+      const data = await parseApiResponse<ChatResponse & { error?: string }>(res);
+      if (!res.ok) {
+        setChatError(data.error || 'Chat failed');
+        return;
+      }
+
+      setChatResult(data);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : 'Chat failed');
+    }
+  };
 
   return (
     <main className="app-shell">
       <div className="ambient-glow" />
       <div className="content-wrap">
         <header className="hero">
-          <p className="eyebrow">The Multi-Model Evaluator</p>
-          <h1>Compare model outputs side-by-side with streaming results.</h1>
+          <p className="eyebrow">Week 2 Local RAG Studio</p>
+          <h1>Model control + ingestion + grounded Q&A (Foundry-first).</h1>
           <p className="hero-copy">
-            Starts with Google Gemini free-tier defaults and lets you bring your
-            own OpenAI or Anthropic key for broader benchmarking.
+            Foundry runtime shows only project-required models with downloaded status.
           </p>
         </header>
 
-        <form
-          onSubmit={handleSubmit}
-          className="composer-card"
-        >
-          <div className="composer-grid">
-            <textarea
-              value={prompt}
-              onChange={event => setPrompt(event.currentTarget.value)}
-              placeholder="Enter a prompt to evaluate both models..."
-              className="prompt-box"
-              rows={4}
-            />
+        <section className="card">
+          <h2>Model Runtime Control</h2>
+          <div className="grid2">
+            <label>
+              Runtime
+              <select
+                value={runtime}
+                onChange={event => {
+                  const next = event.currentTarget.value as RuntimeName;
+                  setRuntime(next);
+                  setModelId(next === 'foundry' ? 'phi-4-mini-reasoning' : 'qwen2.5-7b-instruct');
+                }}
+              >
+                <option value="foundry">Microsoft Foundry Local (project default)</option>
+                <option value="lmstudio">LM Studio (alternate)</option>
+              </select>
+            </label>
 
-            <div className="options-column">
-              <label>
-                System prompt (optional)
-                <input
-                  value={options.systemPrompt}
-                  onChange={event =>
-                    setOptions({
-                      ...options,
-                      systemPrompt: event.currentTarget.value,
-                    })
-                  }
-                  placeholder="You are a concise expert..."
-                />
-              </label>
-
-              <label>
-                Temperature: {options.temperature.toFixed(1)}
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.1"
-                  value={options.temperature}
-                  onChange={event =>
-                    setOptions({
-                      ...options,
-                      temperature: Number(event.currentTarget.value),
-                    })
-                  }
-                />
-              </label>
-
-              <div className="action-row">
-                <button type="submit" className="btn-primary" disabled={isRunning}>
-                  {isRunning ? 'Running...' : 'Run Evaluation'}
-                </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={handleStop}
-                  disabled={!isRunning}
-                >
-                  Stop
-                </button>
-              </div>
-            </div>
+            <label>
+              Model ID
+              {runtime === 'foundry' ? (
+                <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
+                  {models.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <input
+                    value={modelId}
+                    onChange={event => setModelId(event.currentTarget.value)}
+                    list="runtime-models"
+                  />
+                  <datalist id="runtime-models">
+                    {SUGGESTED_LM_MODELS.map(item => (
+                      <option key={item} value={item} />
+                    ))}
+                  </datalist>
+                </>
+              )}
+            </label>
           </div>
-        </form>
 
-        <section className="panel-grid">
-          <ComparisonPanel
-            title="Left Model"
-            config={leftPanel}
-            setConfig={setLeftPanel}
-            status={leftStatus}
-            assistantText={leftAssistantText}
-            errorText={leftError?.message}
-          />
-          <ComparisonPanel
-            title="Right Model"
-            config={rightPanel}
-            setConfig={setRightPanel}
-            status={rightStatus}
-            assistantText={rightAssistantText}
-            errorText={rightError?.message}
-          />
+          <div className="actions">
+            <button
+              className="btn-primary"
+              onClick={startDownload}
+              disabled={Boolean(activeJob) || isAlreadyDownloaded}
+            >
+              {activeJob ? 'Download Running...' : isAlreadyDownloaded ? 'Already Downloaded' : 'Download Model'}
+            </button>
+            <button className="btn-secondary" onClick={refreshModels} disabled={loadingModels}>
+              {loadingModels ? 'Refreshing...' : 'Refresh Models'}
+            </button>
+          </div>
+
+          {activeJob ? (
+            <p className="muted">
+              Active job `{activeJob.id}` using {activeJob.commandLabel ?? 'download command'}: {activeJob.status} ({activeJob.progress}%)
+            </p>
+          ) : null}
+
+          {latestJobForModel?.status === 'failed' ? (
+            <p className="panel-error">Download failed: {latestJobForModel.error || 'Unknown error'}</p>
+          ) : null}
+
+          {warning ? <p className="panel-error">{warning}</p> : null}
+
+          <div className="list-block">
+            <h3>
+              {runtime === 'foundry' ? 'Project-required Foundry models' : 'Detected LM Studio models'}
+            </h3>
+            {models.length === 0 ? (
+              <p className="muted">No models available for this runtime yet.</p>
+            ) : (
+              <ul>
+                {models.map(item => (
+                  <li key={item.id}>
+                    <strong>{item.id}</strong> {item.downloaded ? '✅ Downloaded' : '⬇️ Not downloaded'}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </section>
 
-        {shouldShowReport ? (
-          <section className="comparison-card">
-            <h3>Comparison Report</h3>
-            <p><strong>Summary:</strong> {report.summary}</p>
-            <p><strong>Winner:</strong> {report.winner}</p>
-            <p><strong>Reliability:</strong> {report.reliability}</p>
-            <p><strong>Quality:</strong> {report.quality}</p>
-            <p><strong>Next action:</strong> {report.action}</p>
-          </section>
-        ) : null}
+        <section className="card">
+          <h2>Manual Download & Documentation</h2>
+          <p className="muted">
+            If automatic download fails, run manual command in terminal and click <strong>Refresh Models</strong>.
+          </p>
+          <h3>Foundry Local (project default)</h3>
+          <pre className="code-block">foundry model download phi-4-mini-reasoning</pre>
+          <h3>LM Studio CLI</h3>
+          <pre className="code-block">lms get qwen2.5-7b-instruct --yes</pre>
+          <h3>Official docs</h3>
+          <ul>
+            <li>
+              <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started" target="_blank" rel="noreferrer">
+                Foundry Local - Get Started
+              </a>
+            </li>
+            <li>
+              <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/reference/reference-sdk" target="_blank" rel="noreferrer">
+                Foundry Local - SDK/Reference
+              </a>
+            </li>
+            <li>
+              <a href="https://lmstudio.ai/docs" target="_blank" rel="noreferrer">
+                LM Studio Documentation
+              </a>
+            </li>
+          </ul>
+        </section>
+
+        <section className="card">
+          <h2>Document Ingestion (Prototype)</h2>
+          <label>
+            Select files (.pdf, .md, .txt) - multiple allowed
+            <input
+              type="file"
+              multiple
+              accept=".pdf,.md,.txt,application/pdf,text/markdown,text/plain"
+              onChange={event => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                setSelectedFiles(files);
+              }}
+            />
+          </label>
+
+          {selectedFiles.length > 0 ? (
+            <div className="list-block">
+              <h3>Selected files</h3>
+              <ul>
+                {selectedFiles.map(file => (
+                  <li key={`${file.name}-${file.size}`}>
+                    {file.name} ({Math.max(1, Math.round(file.size / 1024))} KB)
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <div className="actions">
+            <button className="btn-primary" onClick={ingest}>Ingest</button>
+          </div>
+          {ingestError ? <p className="panel-error">{ingestError}</p> : null}
+          {ingestResult ? (
+            <div className="list-block">
+              <p className={ingestResult.success ? 'muted' : 'panel-error'}>
+                Indexed {ingestResult.documentsIndexed} document(s), {ingestResult.chunksIndexed} chunk(s).
+              </p>
+              {ingestResult.message ? <p className="panel-error">{ingestResult.message}</p> : null}
+              {ingestResult.skipped.length > 0 ? (
+                <>
+                  <h3>Skipped files</h3>
+                  <ul>
+                    {ingestResult.skipped.map(item => (
+                      <li key={`${item.name}-${item.reason}`}>
+                        {item.name}: {SKIPPED_REASON_LABELS[item.reason] ?? item.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+              {ingestResult.errors.length > 0 ? (
+                <>
+                  <h3>Errors</h3>
+                  <ul>
+                    {ingestResult.errors.map(item => (
+                      <li key={`${item.name}-${item.message}`}>
+                        {item.name}: {item.message}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+
+        <section className="card">
+          <h2>Grounded Chat (Prototype)</h2>
+          <label>
+            Ask a question
+            <textarea
+              rows={4}
+              value={query}
+              onChange={event => setQuery(event.currentTarget.value)}
+              placeholder="Ask a question based on indexed text..."
+            />
+          </label>
+          <div className="actions">
+            <button className="btn-primary" onClick={ask}>Ask</button>
+          </div>
+          {chatError ? <p className="panel-error">{chatError}</p> : null}
+
+          {chatResult ? (
+            <div className="result-block">
+              <p className="answer">{chatResult.answer}</p>
+              <h3>Citations</h3>
+              <ul>
+                {chatResult.citations.map(item => (
+                  <li key={item.chunk_id}>
+                    {item.source} {item.page !== null ? `(page ${item.page})` : ''} - {item.chunk_id} (score {item.score})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </section>
       </div>
     </main>
   );
