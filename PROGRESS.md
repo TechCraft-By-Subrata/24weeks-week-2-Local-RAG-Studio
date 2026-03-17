@@ -4,7 +4,7 @@ This document outlines the progress of the Local RAG Studio project, comparing t
 
 ## Overall Summary
 
-The project has a functional UI and API structure, but the core RAG pipeline is a simplified prototype. Key components like the vector store (Chroma), embeddings, and the generative model have not been implemented yet. The current implementation uses an in-memory array for storing chunks and a basic keyword search for retrieval.
+The project is now a working local RAG app with Chroma-based storage, embedding generation, semantic retrieval, and grounded answer generation through the selected runtime (Foundry or LM Studio). The main remaining work is production-hardening (runtime compatibility checks, better citations UX, and broader E2E testing).
 
 ## Feature Breakdown
 
@@ -15,39 +15,35 @@ The project has a functional UI and API structure, but the core RAG pipeline is 
 
 ### Ingest API (`/api/ingest`)
 
-- **Status:** ✅ Mostly Complete
-- **Details:** The API can receive files, extract text from PDFs, Markdown, and plain text, and chunk the text.
-- **Deviation:** Instead of generating embeddings and storing them in Chroma, it stores the raw text chunks in an in-memory array.
+- **Status:** ✅ Complete (core flow)
+- **Details:** The API receives files, extracts text from PDFs/Markdown/plain text, chunks text, generates embeddings, and stores chunks + vectors in Chroma.
 
 ### Chat API (`/api/chat`)
 
-- **Status:** ⚠️ Partially Complete
-- **Details:** The API can receive a query and return a response.
-- **Deviation:**
-    - It uses a simple keyword-based search on the in-memory chunks instead of a vector similarity search.
-    - It does not use a generative AI model. The "answer" is a formatted string of the retrieved chunks.
+- **Status:** ✅ Complete (core flow)
+- **Details:** The API embeds the query, retrieves top-K chunks by vector similarity from Chroma, and asks the selected local model to generate a grounded answer with citations.
+- **Fallback behavior:** If generation fails, the API returns retrieved context excerpts plus warnings.
 
 ### Vector Store (Chroma)
 
-- **Status:** ❌ Not Started
-- **Details:** The project uses a simple in-memory array (`rag-store.ts`) to store indexed chunks. ChromaDB has not been integrated.
+- **Status:** ✅ Complete
+- **Details:** Chroma collection is used for add/query/count/get operations, with persistent local storage under `.chroma_db`.
 
 ### Embeddings
 
-- **Status:** ❌ Not Started
-- **Details:** The current retrieval mechanism is based on a simple `scoreChunk` function that does keyword matching. No embedding models are used.
+- **Status:** ✅ Complete
+- **Details:** Embeddings are generated through runtime CLI (`foundry model run` or `lms remote run`) and stored with chunk metadata in Chroma.
 
 ### Model Runtime
 
 - **Status:** ✅ Mostly Complete
-- **Details:** The application can list models from both Foundry and LM Studio, and it can trigger download jobs. This part of the application is well-developed.
+- **Details:** The application can list models from both Foundry and LM Studio, trigger download jobs, generate embeddings, and generate grounded answers.
+- **Known gaps:** CLI response formats vary by installed runtime version and model; resilience/fallback logic exists but should be tested against more local setups.
 
 ## Pending Work
 
-The following items from the original plan are still pending:
+The following items are still pending for a production-ready release:
 
-- **Integrate ChromaDB:** Replace the in-memory `indexedChunks` array with ChromaDB for persistent and scalable vector storage.
-- **Generate Embeddings:** During ingestion, generate embeddings for each text chunk using a model from the selected runtime (Foundry or LM Studio).
-- **Implement Vector Search:** In the chat API, use vector similarity search (via Chroma) to retrieve relevant chunks.
-- **Integrate a Generative Model:** Use the selected language model to generate a natural language answer based on the retrieved context.
-- **Improve Citations:** The citation format is basic and could be improved to be more user-friendly.
+- **Stabilize runtime invocation:** Validate generation payload/response handling across Foundry and LM Studio versions/models.
+- **Improve citations UX:** Add richer citation rendering (source grouping, clickable chunk previews, and confidence cues).
+- **Add E2E tests:** Cover ingest + retrieval + generation for both runtimes, including failure-path assertions.

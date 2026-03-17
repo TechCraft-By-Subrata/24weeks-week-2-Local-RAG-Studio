@@ -38,7 +38,7 @@ This is the process of asking a question and getting an answer.
 2.  **API Request:** The frontend sends the query to our `/api/chat` endpoint.
 3.  **Query Embedding:** The user's query is also converted into an embedding using the same model.
 4.  **Vector Search:** We use this query embedding to search our Chroma database. Chroma finds the text chunks with embeddings that are most similar to the query's embedding. These are the chunks that are most semantically related to the question.
-5.  **Response Generation:** The retrieved chunks are then presented to the user. *(In a full-fledged RAG system, these chunks would be passed to a generative LLM to synthesize a final answer. Our current implementation is a prototype that shows the retrieved context directly).*
+5.  **Response Generation:** The retrieved chunks are passed to a local generative model (via Foundry Local or LM Studio) to synthesize a grounded answer with citations. If generation fails, the API falls back to returning retrieved context excerpts.
 
 ## The "What": A Deep Dive into the Code
 
@@ -176,6 +176,10 @@ To run this project on your machine, you'll need a few prerequisites.
 
 ### Prerequisites
 - **Node.js:** [Download and install Node.js](https://nodejs.org/).
+- **Chroma server:** Run a local Chroma instance (default URL expected by this app: `http://localhost:8000`).
+  ```bash
+  docker run -p 8000:8000 chromadb/chroma
+  ```
 - **Foundry Local:** Follow the [official Foundry Local installation guide](https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started).
 - **An Embedding Model:** You need to have the `nomic-embed-text-v1` model available in your Foundry Local runtime. You can typically download it by running:
   ```bash
@@ -193,7 +197,8 @@ To run this project on your machine, you'll need a few prerequisites.
     ```bash
     npm run dev
     ```
-3.  **Open the application:** Open [http://localhost:3000](http://localhost:3000) in your browser.
+3.  **(Optional) Configure Chroma URL if not using localhost:8000:** add `CHROMA_URL=http://<host>:<port>` to `.env.local`.
+4.  **Open the application:** Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 You can now ingest your own documents and start asking questions!
 

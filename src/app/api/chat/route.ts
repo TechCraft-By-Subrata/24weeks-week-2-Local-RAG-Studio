@@ -1,6 +1,9 @@
 import { searchChunks } from '@/lib/rag-store';
+import { generateGroundedAnswer, type RuntimeName } from '@/lib/model-runtime';
 
 type ChatRequest = {
+  runtime: RuntimeName;
+  modelId?: string;
   query: string;
   options?: {
     topK?: number;
@@ -24,11 +27,13 @@ export async function POST(req: Request) {
     return Response.json({ error: 'query is required' }, { status: 400 });
   }
 
+  const runtime = body.runtime || 'foundry';
+  const modelId = body.modelId?.trim();
   const topK = body.options?.topK ?? 5;
   const minScore = body.options?.minScore ?? 0.2;
   const start = Date.now();
 
-  const hits = await searchChunks(query, topK, minScore);
+  const hits = await searchChunks(runtime, query, topK, minScore);
 
   if (hits.length === 0) {
     return Response.json({
@@ -52,13 +57,38 @@ export async function POST(req: Request) {
     score: item.score,
   }));
 
-  const answer = [
-    'Grounded answer (prototype):',
-    ...hits.map(
+  const context = hits
+    .map(
       (item, index) =>
-        `[${index + 1}] ${item.text.slice(0, 260).trim()} (${item.source})`,
-    ),
-  ].join('\n\n');
+        `[${index + 1}] Source: ${item.source}${item.page !== null ? ` (page ${item.page})` : ''}\n${item.text}`,
+    )
+    .join('\n\n---\n\n');
+
+  const systemPrompt =
+    body.options?.systemPrompt?.trim() ||
+    'Answer only from the provided context. If the context is insufficient, explicitly say what is missing. Include citations like [1], [2].';
+
+  let answer: string;
+  let generationWarning: string | undefined;
+  try {
+    answer = await generateGroundedAnswer({
+      runtime,
+      modelId,
+      prompt: `${systemPrompt}\n\nQuestion:\n${query}\n\nContext:\n${context}\n\nReturn a concise answer with citations.`,
+      timeoutMs: 45_000,
+    });
+  } catch (error) {
+    generationWarning =
+      error instanceof Error ? `generation_failed: ${error.message}` : 'generation_failed';
+
+    answer = [
+      'Model generation unavailable. Returning retrieved context excerpts:',
+      ...hits.map(
+        (item, index) =>
+          `[${index + 1}] ${item.text.slice(0, 260).trim()} (${item.source})`,
+      ),
+    ].join('\n\n');
+  }
 
   return Response.json({
     answer,
@@ -68,9 +98,11 @@ export async function POST(req: Request) {
       matched: hits.length,
       latencyMs: Date.now() - start,
     },
-    warnings:
-      hits.length < 2
+    warnings: [
+      ...(hits.length < 2
         ? ['low_retrieval_confidence_only_one_chunk_matched']
-        : undefined,
+        : []),
+      ...(generationWarning ? [generationWarning] : []),
+    ],
   });
 }

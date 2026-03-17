@@ -1,5 +1,5 @@
 import { ChromaClient, type Collection } from 'chromadb';
-import { getEmbeddings } from './model-runtime';
+import { getEmbeddings, type RuntimeName } from './model-runtime';
 
 export type IndexedChunk = {
   id: string;
@@ -20,7 +20,21 @@ async function getCollection(): Promise<Collection> {
     return collection;
   }
 
-  const client = new ChromaClient({ path: './.chroma_db' });
+  const chromaUrl = process.env.CHROMA_URL?.trim() || 'http://localhost:8000';
+  let client: ChromaClient;
+  try {
+    const parsed = new URL(chromaUrl);
+    client = new ChromaClient({
+      host: parsed.hostname,
+      port: parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80,
+      ssl: parsed.protocol === 'https:',
+    });
+  } catch {
+    throw new Error(
+      `Invalid CHROMA_URL value: "${chromaUrl}". Expected a full URL like http://localhost:8000`,
+    );
+  }
+
   collection = await client.getOrCreateCollection({ name: CHROMA_COLLECTION_NAME });
   return collection;
 }
@@ -52,6 +66,7 @@ export function chunkText(
 }
 
 export async function ingestDocument(args: {
+  runtime: RuntimeName;
   source: string;
   text: string;
   page?: number | null;
@@ -63,7 +78,7 @@ export async function ingestDocument(args: {
     return [];
   }
 
-  const embeddings = await getEmbeddings(parts);
+  const embeddings = await getEmbeddings(args.runtime, parts);
   const collection = await getCollection();
 
   const records = parts.map((part, index) => {
@@ -88,29 +103,40 @@ export async function ingestDocument(args: {
   return records;
 }
 
-export async function searchChunks(query: string, topK: number, minScore: number) {
-  const queryEmbedding = await getEmbeddings([query]);
+export async function searchChunks(runtime: RuntimeName, query: string, topK: number, minScore: number) {
+  const queryEmbedding = await getEmbeddings(runtime, [query]);
   const collection = await getCollection();
 
   const results = await collection.query({
     queryEmbeddings: queryEmbedding,
     nResults: topK,
+    include: ['documents', 'metadatas', 'distances'],
   });
 
-  if (!results.ids || results.ids.length === 0 || results.ids[0].length === 0) {
+  const rows = results.rows();
+  if (!rows || rows.length === 0 || rows[0].length === 0) {
     return [];
   }
   
-  const hits = results.ids[0].map((id, index) => {
-    const distance = results.distances![0][index];
-    const score = 1.0 - distance;
+  const hits = rows[0].flatMap(row => {
+    if (!row.id || !row.document) {
+      return [];
+    }
+
+    const distance = typeof row.distance === 'number' ? row.distance : 1;
+    const score = Math.max(0, 1.0 - distance);
+    const metadata = row.metadata as
+      | { source?: string; page?: number | null }
+      | null
+      | undefined;
+
     return {
-      id: id,
-      chunkId: id,
-      source: results.metadatas![0][index]!.source as string,
-      page: results.metadatas![0][index]!.page as number | null,
-      text: results.documents![0][index]!,
-      score: score,
+      id: row.id,
+      chunkId: row.id,
+      source: metadata?.source || 'unknown-source',
+      page: metadata?.page ?? null,
+      text: row.document,
+      score,
     };
   });
 
@@ -119,18 +145,23 @@ export async function searchChunks(query: string, topK: number, minScore: number
 
 export async function getIngestStats() {
   const collection = await getCollection();
-  const count = await collection.count();
-  
-  // Note: getting distinct sources is not straightforward in ChromaDB without querying everything.
-  // We will return the chunk count for now. A more robust solution could be to store metadata
-  // in a separate database or use a different approach.
+  const rows = await collection.get({ include: ['metadatas'] });
+  const uniqueSources = new Set<string>();
+
+  for (const metadata of rows.metadatas) {
+    const source = (metadata as { source?: string } | null)?.source;
+    if (source) uniqueSources.add(source);
+  }
+
   return {
-    documentsIndexed: 0, // This is now an estimate.
-    chunksIndexed: count,
+    documentsIndexed: uniqueSources.size,
+    chunksIndexed: rows.ids.length,
   };
 }
 
 export async function deleteAllDocuments() {
   const collection = await getCollection();
-  await collection.delete();
+  const rows = await collection.get({ include: [] });
+  if (rows.ids.length === 0) return;
+  await collection.delete({ ids: rows.ids });
 }

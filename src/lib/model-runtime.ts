@@ -181,6 +181,11 @@ const LMSTUDIO_BINARIES = [
   '/opt/homebrew/bin/lms',
 ];
 
+const DEFAULT_CHAT_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
+  foundry: 'phi-4-mini-reasoning',
+  lmstudio: 'qwen2.5-7b-instruct',
+};
+
 export async function listModels(runtime: RuntimeName): Promise<{
   models: RuntimeModel[];
   warning?: string;
@@ -306,15 +311,14 @@ async function runCommandWithInput(
   });
 }
 
-export async function getEmbeddings(texts: string[]): Promise<number[][]> {
-  const modelId = 'nomic-embed-text-v1';
+export async function getEmbeddings(runtime: RuntimeName, texts: string[]): Promise<number[][]> {
+  const modelId = runtime === 'lmstudio' ? 'text-embedding-nomic-embed-text-v1.5' : 'nomic-embed-text-v1';
   const payload = JSON.stringify({ texts });
 
-  // In a real scenario, we would find the foundry binary.
-  // For this prototype, we'll hardcode the most likely path.
-  const foundryPath = FOUNDRY_BINARIES[0];
+  const binaryPath = runtime === 'lmstudio' ? LMSTUDIO_BINARIES[0] : FOUNDRY_BINARIES[0];
+  const args = runtime === 'lmstudio' ? ['remote', 'run', modelId] : ['model', 'run', modelId];
 
-  const result = await runCommandWithInput(foundryPath, ['model', 'run', modelId], payload);
+  const result = await runCommandWithInput(binaryPath, args, payload);
 
   if (!result.ok) {
     throw new Error(`Failed to get embeddings: ${result.stderr}`);
@@ -329,4 +333,61 @@ export async function getEmbeddings(texts: string[]): Promise<number[][]> {
   } catch (e) {
     throw new Error(`Failed to parse embeddings output: ${e instanceof Error ? e.message : 'Unknown error'}`);
   }
+}
+
+function extractGeneratedText(stdout: string): string {
+  const trimmed = stdout.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as
+      | { output?: string; text?: string; response?: string; content?: string; choices?: Array<{ text?: string; message?: { content?: string } }> }
+      | Array<{ output?: string; text?: string; response?: string; content?: string }>;
+
+    if (Array.isArray(parsed)) {
+      const first = parsed[0];
+      return (first?.output || first?.text || first?.response || first?.content || '').trim();
+    }
+
+    const choiceText = parsed.choices?.[0]?.message?.content || parsed.choices?.[0]?.text;
+    return (choiceText || parsed.output || parsed.text || parsed.response || parsed.content || '').trim();
+  } catch {
+    return trimmed;
+  }
+}
+
+export function getDefaultChatModel(runtime: RuntimeName): string {
+  return DEFAULT_CHAT_MODEL_BY_RUNTIME[runtime];
+}
+
+export async function generateGroundedAnswer(args: {
+  runtime: RuntimeName;
+  modelId?: string;
+  prompt: string;
+  timeoutMs?: number;
+}): Promise<string> {
+  const modelId = args.modelId?.trim() || getDefaultChatModel(args.runtime);
+  const binaryPath = args.runtime === 'lmstudio' ? LMSTUDIO_BINARIES[0] : FOUNDRY_BINARIES[0];
+  const commandArgs =
+    args.runtime === 'lmstudio'
+      ? ['remote', 'run', modelId]
+      : ['model', 'run', modelId];
+
+  const result = await runCommandWithInput(
+    binaryPath,
+    commandArgs,
+    args.prompt,
+    args.timeoutMs ?? 45_000,
+  );
+
+  if (!result.ok) {
+    throw new Error(result.stderr.trim() || `Generation failed with code ${result.code}`);
+  }
+
+  const text = extractGeneratedText(result.stdout);
+  if (!text) {
+    throw new Error('Model returned an empty response.');
+  }
+
+  return text;
 }

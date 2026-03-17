@@ -1,8 +1,10 @@
 import { getIngestStats, ingestDocument } from '@/lib/rag-store';
+import { type RuntimeName } from '@/lib/model-runtime';
 
 export const runtime = 'nodejs';
 
 type IngestRequest = {
+  runtime: RuntimeName;
   files: Array<{
     name: string;
     mimeType: 'text/markdown' | 'application/pdf' | 'text/plain';
@@ -47,6 +49,7 @@ export async function POST(req: Request) {
       return Response.json({ error: 'files[] is required' }, { status: 400 });
     }
 
+    const runtime = body.runtime || 'foundry';
     const chunkSize = body.options?.chunkSize ?? 800;
     const chunkOverlap = body.options?.chunkOverlap ?? 120;
 
@@ -73,6 +76,7 @@ export async function POST(req: Request) {
         }
 
         const records = await ingestDocument({
+          runtime,
           source: file.name,
           text,
           chunkSize,

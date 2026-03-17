@@ -226,6 +226,7 @@ export default function Week2LocalRag() {
     );
 
     const payload = {
+      runtime,
       files: filesPayload,
       options: {
         chunkSize: 800,
@@ -266,6 +267,8 @@ export default function Week2LocalRag() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          runtime,
+          modelId,
           query,
           options: { topK: 5, minScore: 0.2, temperature: 0.2 },
         }),
@@ -413,7 +416,7 @@ export default function Week2LocalRag() {
         </section>
 
         <section className="card">
-          <h2>Document Ingestion (Prototype)</h2>
+          <h2>Document Ingestion</h2>
           <label>
             Select files (.pdf, .md, .txt) - multiple allowed
             <input
@@ -479,7 +482,7 @@ export default function Week2LocalRag() {
         </section>
 
         <section className="card">
-          <h2>Grounded Chat (Prototype)</h2>
+          <h2>Grounded Chat</h2>
           <label>
             Ask a question
             <textarea
