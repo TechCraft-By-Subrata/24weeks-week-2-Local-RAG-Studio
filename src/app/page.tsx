@@ -693,35 +693,50 @@ export default function Week2LocalRag() {
                   Ask a question. Answers will appear here with citations.
                 </p>
               ) : (
-                chatMessages.map(message => (
-                  <article
-                    key={message.id}
-                    className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}
-                  >
-                    <p className="chat-role">{message.role === 'user' ? 'You' : 'Assistant'}</p>
-                    <p className="answer">{message.text}</p>
-                    {message.citations && message.citations.length > 0 ? (
-                      <div className="citation-block">
-                        <h3>Citations</h3>
-                        <ul>
-                          {message.citations.map(item => (
-                            <li key={item.chunk_id}>
-                              {item.source} {item.page !== null ? `(page ${item.page})` : ''} - {item.chunk_id} (score {item.score.toFixed(3)})
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {message.warnings && message.warnings.length > 0 ? (
-                      <p className="muted">Warnings: {message.warnings.join(' | ')}</p>
-                    ) : null}
-                    {message.retrieval ? (
-                      <p className="muted">
-                        Retrieval: {message.retrieval.matched} hit(s), topK {message.retrieval.topK}, {message.retrieval.latencyMs} ms
+                <>
+                  {chatMessages.map(message => (
+                    <article
+                      key={message.id}
+                      className={`chat-message ${message.role === 'user' ? 'chat-user' : 'chat-assistant'}`}
+                    >
+                      <p className="chat-role">{message.role === 'user' ? 'You' : 'Assistant'}</p>
+                      <p className="answer">{message.text}</p>
+                      {message.citations && message.citations.length > 0 ? (
+                        <div className="citation-block">
+                          <h3>Citations</h3>
+                          <ul>
+                            {message.citations.map(item => (
+                              <li key={item.chunk_id}>
+                                {item.source} {item.page !== null ? `(page ${item.page})` : ''} - {item.chunk_id} (score {item.score.toFixed(3)})
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {message.warnings && message.warnings.length > 0 ? (
+                        <p className="muted">Warnings: {message.warnings.join(' | ')}</p>
+                      ) : null}
+                      {message.retrieval ? (
+                        <p className="muted">
+                          Retrieval: {message.retrieval.matched} hit(s), topK {message.retrieval.topK}, {message.retrieval.latencyMs} ms
+                        </p>
+                      ) : null}
+                    </article>
+                  ))}
+                  {chatLoading ? (
+                    <article className="chat-message chat-assistant chat-pending">
+                      <p className="chat-role">Assistant</p>
+                      <p className="answer">
+                        Finding answer
+                        <span className="thinking-dots" aria-hidden="true">
+                          <span>.</span>
+                          <span>.</span>
+                          <span>.</span>
+                        </span>
                       </p>
-                    ) : null}
-                  </article>
-                ))
+                    </article>
+                  ) : null}
+                </>
               )}
             </div>
 
