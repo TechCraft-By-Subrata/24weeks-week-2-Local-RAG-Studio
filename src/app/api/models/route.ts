@@ -8,8 +8,8 @@ export async function GET(req: NextRequest) {
   const runtime =
     (req.nextUrl.searchParams.get('runtime') as RuntimeName | null) ?? 'lmstudio';
 
-  if (runtime !== 'foundry' && runtime !== 'lmstudio') {
-    return Response.json({ error: 'runtime must be foundry or lmstudio' }, { status: 400 });
+  if (runtime !== 'foundry' && runtime !== 'lmstudio' && runtime !== 'openai') {
+    return Response.json({ error: 'runtime must be foundry, lmstudio, or openai' }, { status: 400 });
   }
 
   const result = await listModels(runtime);

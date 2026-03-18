@@ -4,12 +4,14 @@ import {
   getIngestStats,
   listIndexedDocuments,
 } from '@/lib/rag-store';
+import { NextRequest } from 'next/server';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const vectorDbUrl = req.nextUrl.searchParams.get('vectorDbUrl')?.trim() || undefined;
     const [documents, totals] = await Promise.all([
-      listIndexedDocuments(),
-      getIngestStats(),
+      listIndexedDocuments(vectorDbUrl),
+      getIngestStats(vectorDbUrl),
     ]);
     return Response.json({ documents, totals });
   } catch (error) {
@@ -25,6 +27,7 @@ export async function GET() {
 type DeleteRequest = {
   source?: string;
   deleteAll?: boolean;
+  vectorDbUrl?: string;
 };
 
 export async function DELETE(req: Request) {
@@ -38,9 +41,9 @@ export async function DELETE(req: Request) {
     }
 
     if (body.deleteAll) {
-      await deleteAllDocuments();
+      await deleteAllDocuments(body.vectorDbUrl?.trim());
     } else if (body.source?.trim()) {
-      await deleteDocumentBySource(body.source);
+      await deleteDocumentBySource(body.source, body.vectorDbUrl?.trim());
     } else {
       return Response.json(
         { error: 'Provide source or set deleteAll=true' },
@@ -49,8 +52,8 @@ export async function DELETE(req: Request) {
     }
 
     const [documents, totals] = await Promise.all([
-      listIndexedDocuments(),
-      getIngestStats(),
+      listIndexedDocuments(body.vectorDbUrl?.trim()),
+      getIngestStats(body.vectorDbUrl?.trim()),
     ]);
     return Response.json({ success: true, documents, totals });
   } catch (error) {

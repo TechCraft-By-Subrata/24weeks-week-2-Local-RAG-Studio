@@ -1,35 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
-type RuntimeName = 'foundry' | 'lmstudio';
-
-type RuntimeModel = {
-  id: string;
-  provider: RuntimeName;
-  downloaded: boolean;
-  size?: string;
-  source?: string;
-};
-
-type ModelJob = {
-  id: string;
-  runtime: RuntimeName;
-  modelId: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  progress: number;
-  log: string;
-  error?: string;
-  updatedAt: number;
-  commandLabel?: string;
-};
-
-type ModelResponse = {
-  runtime: RuntimeName;
-  models: RuntimeModel[];
-  warning?: string;
-  jobs: ModelJob[];
-};
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type IngestResponse = {
   success: boolean;
@@ -81,21 +52,23 @@ type ChatMessage = {
   retrieval?: ChatResponse['retrieval'];
 };
 
-const SUGGESTED_LM_MODELS = [
+type ConnectivityResponse = {
+  success: boolean;
+  message: string;
+};
+
+const SUGGESTED_CHAT_MODELS = [
   'qwen/qwen3-vl-8b',
-  'qwen2.5-7b-instruct',
-  'llama-3.1-8b-instruct',
-  'qwen2.5-coder-7b-instruct',
+  'gpt-4o-mini',
+  'gemini-2.0-flash',
+  'claude-3-5-sonnet-latest',
 ];
 
-const SUGGESTED_LM_EMBED_MODELS = [
+const SUGGESTED_EMBEDDING_MODELS = [
   'text-embedding-nomic-embed-text-v1.5',
-];
-
-const SUGGESTED_FOUNDRY_EMBED_MODELS = [
-  'nomic-embed-text-v1',
-  'text-embedding-nomic-embed-text-v1.5',
-  'nomic-embed-text-v1.5',
+  'text-embedding-3-small',
+  'text-embedding-3-large',
+  'gemini-embedding-001',
 ];
 
 const SKIPPED_REASON_LABELS: Record<string, string> = {
@@ -105,10 +78,11 @@ const SKIPPED_REASON_LABELS: Record<string, string> = {
 };
 
 const STORAGE_KEYS = {
-  runtime: 'ragstudio.runtime',
-  modelId: 'ragstudio.modelId',
-  embeddingRuntime: 'ragstudio.embeddingRuntime',
+  chatBaseUrl: 'ragstudio.chatBaseUrl',
+  chatModelId: 'ragstudio.chatModelId',
+  embeddingBaseUrl: 'ragstudio.embeddingBaseUrl',
   embeddingModelId: 'ragstudio.embeddingModelId',
+  vectorDbUrl: 'ragstudio.vectorDbUrl',
 } as const;
 
 async function parseApiResponse<T>(res: Response): Promise<T> {
@@ -134,37 +108,28 @@ function makeMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function normalizeModelKey(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-function modelIdsMatch(a: string, b: string): boolean {
-  const left = normalizeModelKey(a);
-  const right = normalizeModelKey(b);
-  return left === right || left.includes(right) || right.includes(left);
-}
-
-function isFoundryCatalogMissingError(value?: string): boolean {
-  if (!value) return false;
-  const lower = value.toLowerCase();
-  return (
-    lower.includes('not available in your foundry catalog') ||
-    lower.includes('not found in the catalog')
-  );
-}
-
 export default function Week2LocalRag() {
-  const [runtime, setRuntime] = useState<RuntimeName>('lmstudio');
-  const [modelId, setModelId] = useState('qwen/qwen3-vl-8b');
-  const [embeddingRuntime, setEmbeddingRuntime] = useState<RuntimeName>('lmstudio');
+  const [chatBaseUrl, setChatBaseUrl] = useState('http://127.0.0.1:1234');
+  const [chatApiKey, setChatApiKey] = useState('');
+  const [chatModelId, setChatModelId] = useState('qwen/qwen3-vl-8b');
+
+  const [embeddingBaseUrl, setEmbeddingBaseUrl] = useState('http://127.0.0.1:1234');
+  const [embeddingApiKey, setEmbeddingApiKey] = useState('');
   const [embeddingModelId, setEmbeddingModelId] = useState('text-embedding-nomic-embed-text-v1.5');
-  const [modelsByRuntime, setModelsByRuntime] = useState<Record<RuntimeName, RuntimeModel[]>>({
-    foundry: [],
-    lmstudio: [],
-  });
-  const [jobs, setJobs] = useState<ModelJob[]>([]);
-  const [warning, setWarning] = useState<string | undefined>();
-  const [loadingModels, setLoadingModels] = useState(false);
+
+  const [vectorDbUrl, setVectorDbUrl] = useState('http://localhost:8000');
+
+  const [chatTestLoading, setChatTestLoading] = useState(false);
+  const [chatTestMessage, setChatTestMessage] = useState<string | null>(null);
+  const [chatTestError, setChatTestError] = useState<string | null>(null);
+
+  const [embeddingTestLoading, setEmbeddingTestLoading] = useState(false);
+  const [embeddingTestMessage, setEmbeddingTestMessage] = useState<string | null>(null);
+  const [embeddingTestError, setEmbeddingTestError] = useState<string | null>(null);
+
+  const [vectorTestLoading, setVectorTestLoading] = useState(false);
+  const [vectorTestMessage, setVectorTestMessage] = useState<string | null>(null);
+  const [vectorTestError, setVectorTestError] = useState<string | null>(null);
 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [ingestResult, setIngestResult] = useState<IngestResponse | null>(null);
@@ -185,126 +150,15 @@ export default function Week2LocalRag() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
 
-  const chatModels = useMemo(() => modelsByRuntime[runtime] ?? [], [modelsByRuntime, runtime]);
-  const embeddingModels = useMemo(
-    () => modelsByRuntime[embeddingRuntime] ?? [],
-    [modelsByRuntime, embeddingRuntime],
-  );
-
-  const selectedChatModelInfo = useMemo(
-    () => chatModels.find(model => modelIdsMatch(model.id, modelId)),
-    [chatModels, modelId],
-  );
-  const selectedEmbeddingModelInfo = useMemo(
-    () => embeddingModels.find(model => modelIdsMatch(model.id, embeddingModelId)),
-    [embeddingModels, embeddingModelId],
-  );
-  const isChatModelDownloaded = Boolean(selectedChatModelInfo?.downloaded);
-  const isEmbeddingModelDownloaded = Boolean(selectedEmbeddingModelInfo?.downloaded);
-
-  const activeChatJob = useMemo(
-    () =>
-      jobs.find(
-        job =>
-          job.runtime === runtime &&
-          modelIdsMatch(job.modelId, modelId) &&
-          (job.status === 'queued' || job.status === 'running'),
-      ),
-    [jobs, runtime, modelId],
-  );
-
-  const activeEmbeddingJob = useMemo(
-    () =>
-      jobs.find(
-        job =>
-          job.runtime === embeddingRuntime &&
-          modelIdsMatch(job.modelId, embeddingModelId) &&
-          (job.status === 'queued' || job.status === 'running'),
-      ),
-    [jobs, embeddingRuntime, embeddingModelId],
-  );
-
-  const latestChatJob = useMemo(
-    () =>
-      jobs
-        .filter(job => job.runtime === runtime && modelIdsMatch(job.modelId, modelId))
-        .sort((a, b) => b.updatedAt - a.updatedAt)[0],
-    [jobs, runtime, modelId],
-  );
-
-  const latestEmbeddingJob = useMemo(
-    () =>
-      jobs
-        .filter(
-          job =>
-            job.runtime === embeddingRuntime &&
-            modelIdsMatch(job.modelId, embeddingModelId),
-        )
-        .sort((a, b) => b.updatedAt - a.updatedAt)[0],
-    [jobs, embeddingRuntime, embeddingModelId],
-  );
-
-  const hasAnyActiveJob = useMemo(
-    () => jobs.some(job => job.status === 'queued' || job.status === 'running'),
-    [jobs],
-  );
-
-  const refreshModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const [foundryRes, lmstudioRes] = await Promise.all([
-        fetch('/api/models?runtime=foundry', { cache: 'no-store' }),
-        fetch('/api/models?runtime=lmstudio', { cache: 'no-store' }),
-      ]);
-      const [foundryData, lmstudioData] = await Promise.all([
-        parseApiResponse<ModelResponse>(foundryRes),
-        parseApiResponse<ModelResponse>(lmstudioRes),
-      ]);
-
-      setModelsByRuntime({
-        foundry: foundryData.models ?? [],
-        lmstudio: lmstudioData.models ?? [],
-      });
-      setJobs([
-        ...(foundryData.jobs ?? []),
-        ...(lmstudioData.jobs ?? []),
-      ]);
-
-      const warnings = [
-        runtime === 'foundry' ? foundryData.warning : lmstudioData.warning,
-        embeddingRuntime === 'foundry' ? foundryData.warning : lmstudioData.warning,
-      ].filter(Boolean);
-      setWarning(warnings.length > 0 ? warnings.join(' | ') : undefined);
-
-      const runtimeModels = runtime === 'foundry' ? foundryData.models ?? [] : lmstudioData.models ?? [];
-      if (runtimeModels.length > 0) {
-        const hasCurrent = runtimeModels.some(item => modelIdsMatch(item.id, modelId));
-        if (!hasCurrent) {
-          setModelId(runtimeModels[0].id);
-        }
-      }
-      const embeddingRuntimeModels =
-        embeddingRuntime === 'foundry' ? foundryData.models ?? [] : lmstudioData.models ?? [];
-      if (embeddingRuntimeModels.length > 0) {
-        const hasCurrentEmbedding = embeddingRuntimeModels.some(item =>
-          modelIdsMatch(item.id, embeddingModelId),
-        );
-        if (!hasCurrentEmbedding) {
-          setEmbeddingModelId(embeddingRuntimeModels[0].id);
-        }
-      }
-    } catch (error) {
-      setWarning(error instanceof Error ? error.message : 'Could not fetch models');
-    } finally {
-      setLoadingModels(false);
-    }
-  }, [runtime, embeddingRuntime, modelId, embeddingModelId]);
-
   const refreshDatabase = useCallback(async () => {
     setLoadingDb(true);
     setDbError(null);
     try {
-      const res = await fetch('/api/indexed-documents', { cache: 'no-store' });
+      const params = new URLSearchParams();
+      if (vectorDbUrl.trim()) params.set('vectorDbUrl', vectorDbUrl.trim());
+      const res = await fetch(`/api/indexed-documents?${params.toString()}`, {
+        cache: 'no-store',
+      });
       const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
       if (!res.ok) {
         setDbError(data.error || 'Failed to load database state');
@@ -326,60 +180,41 @@ export default function Week2LocalRag() {
     } finally {
       setLoadingDb(false);
     }
-  }, []);
+  }, [vectorDbUrl]);
 
   useEffect(() => {
     try {
-      const savedRuntime = window.localStorage.getItem(STORAGE_KEYS.runtime);
-      const savedModelId = window.localStorage.getItem(STORAGE_KEYS.modelId);
-      const savedEmbeddingRuntime = window.localStorage.getItem(STORAGE_KEYS.embeddingRuntime);
+      const savedChatBaseUrl = window.localStorage.getItem(STORAGE_KEYS.chatBaseUrl);
+      const savedChatModelId = window.localStorage.getItem(STORAGE_KEYS.chatModelId);
+      const savedEmbeddingBaseUrl = window.localStorage.getItem(STORAGE_KEYS.embeddingBaseUrl);
       const savedEmbeddingModelId = window.localStorage.getItem(STORAGE_KEYS.embeddingModelId);
+      const savedVectorDbUrl = window.localStorage.getItem(STORAGE_KEYS.vectorDbUrl);
 
-      if (savedRuntime === 'foundry' || savedRuntime === 'lmstudio') {
-        setRuntime(savedRuntime);
-      }
-      if (savedModelId) {
-        setModelId(savedModelId);
-      }
-      if (savedEmbeddingRuntime === 'foundry' || savedEmbeddingRuntime === 'lmstudio') {
-        setEmbeddingRuntime(savedEmbeddingRuntime);
-      }
-      if (savedEmbeddingModelId) {
-        setEmbeddingModelId(savedEmbeddingModelId);
-      }
+      if (savedChatBaseUrl) setChatBaseUrl(savedChatBaseUrl);
+      if (savedChatModelId) setChatModelId(savedChatModelId);
+      if (savedEmbeddingBaseUrl) setEmbeddingBaseUrl(savedEmbeddingBaseUrl);
+      if (savedEmbeddingModelId) setEmbeddingModelId(savedEmbeddingModelId);
+      if (savedVectorDbUrl) setVectorDbUrl(savedVectorDbUrl);
     } catch {
-      // Ignore localStorage errors and continue with defaults.
+      // Ignore localStorage errors.
     }
   }, []);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(STORAGE_KEYS.runtime, runtime);
-      window.localStorage.setItem(STORAGE_KEYS.modelId, modelId);
-      window.localStorage.setItem(STORAGE_KEYS.embeddingRuntime, embeddingRuntime);
+      window.localStorage.setItem(STORAGE_KEYS.chatBaseUrl, chatBaseUrl);
+      window.localStorage.setItem(STORAGE_KEYS.chatModelId, chatModelId);
+      window.localStorage.setItem(STORAGE_KEYS.embeddingBaseUrl, embeddingBaseUrl);
       window.localStorage.setItem(STORAGE_KEYS.embeddingModelId, embeddingModelId);
+      window.localStorage.setItem(STORAGE_KEYS.vectorDbUrl, vectorDbUrl);
     } catch {
-      // Ignore localStorage errors in restricted environments.
+      // Ignore localStorage errors.
     }
-  }, [runtime, modelId, embeddingRuntime, embeddingModelId]);
-
-  useEffect(() => {
-    void refreshModels();
-  }, [refreshModels]);
+  }, [chatBaseUrl, chatModelId, embeddingBaseUrl, embeddingModelId, vectorDbUrl]);
 
   useEffect(() => {
     void refreshDatabase();
   }, [refreshDatabase]);
-
-  useEffect(() => {
-    if (!hasAnyActiveJob) return;
-
-    const timer = setInterval(() => {
-      void refreshModels();
-    }, 1800);
-
-    return () => clearInterval(timer);
-  }, [hasAnyActiveJob, refreshModels]);
 
   useEffect(() => {
     const node = chatLogRef.current;
@@ -387,40 +222,70 @@ export default function Week2LocalRag() {
     node.scrollTop = node.scrollHeight;
   }, [chatMessages, chatLoading]);
 
-  const startDownload = async (
-    targetRuntime: RuntimeName,
-    targetModelId: string,
-    alreadyDownloaded: boolean,
-  ) => {
-    setWarning(undefined);
+  const testConnection = async (target: 'chat' | 'embedding' | 'vector') => {
+    const setLoading =
+      target === 'chat'
+        ? setChatTestLoading
+        : target === 'embedding'
+          ? setEmbeddingTestLoading
+          : setVectorTestLoading;
+    const setMessage =
+      target === 'chat'
+        ? setChatTestMessage
+        : target === 'embedding'
+          ? setEmbeddingTestMessage
+          : setVectorTestMessage;
+    const setError =
+      target === 'chat'
+        ? setChatTestError
+        : target === 'embedding'
+          ? setEmbeddingTestError
+          : setVectorTestError;
 
-    if (alreadyDownloaded) {
-      setWarning(`Model "${targetModelId}" is already downloaded.`);
-      return;
-    }
+    setLoading(true);
+    setMessage(null);
+    setError(null);
 
     try {
-      const res = await fetch('/api/models/download', {
+      const payload =
+        target === 'chat'
+          ? {
+              target,
+              baseUrl: chatBaseUrl,
+              apiKey: chatApiKey,
+              modelId: chatModelId,
+            }
+          : target === 'embedding'
+            ? {
+                target,
+                baseUrl: embeddingBaseUrl,
+                apiKey: embeddingApiKey,
+                modelId: embeddingModelId,
+              }
+            : {
+                target,
+                vectorDbUrl,
+              };
+
+      const res = await fetch('/api/connectivity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runtime: targetRuntime, modelId: targetModelId }),
+        body: JSON.stringify(payload),
       });
-
-      const data = await parseApiResponse<{ job?: ModelJob; error?: string }>(res);
+      const data = await parseApiResponse<ConnectivityResponse & { error?: string }>(res);
       if (!res.ok) {
-        setWarning(data.error || 'Failed to start download');
+        setError(data.error || `${target} test failed`);
         return;
       }
 
-      if (data.job) {
-        setJobs(current => [data.job as ModelJob, ...current.filter(item => item.id !== data.job?.id)]);
-      } else {
-        setWarning(`Download request for "${targetModelId}" was accepted, but no job id was returned.`);
+      setMessage(data.message);
+      if (target === 'vector') {
+        await refreshDatabase();
       }
-
-      await refreshModels();
     } catch (error) {
-      setWarning(error instanceof Error ? error.message : 'Failed to start download');
+      setError(error instanceof Error ? error.message : `${target} test failed`);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -469,13 +334,16 @@ export default function Week2LocalRag() {
     );
 
     const payload = {
-      runtime,
+      runtime: 'openai',
       files: filesPayload,
       options: {
         chunkSize: 800,
         chunkOverlap: 120,
         embeddingModelId,
-        embeddingRuntime,
+        embeddingRuntime: 'openai',
+        embeddingBaseUrl,
+        embeddingApiKey,
+        vectorDbUrl,
       },
     };
 
@@ -523,8 +391,8 @@ export default function Week2LocalRag() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          runtime,
-          modelId,
+          runtime: 'openai',
+          modelId: chatModelId,
           query: trimmedQuery,
           options: {
             topK: 5,
@@ -532,7 +400,12 @@ export default function Week2LocalRag() {
             temperature: 0.2,
             sourceFilter: selectedSources.length > 0 ? selectedSources : undefined,
             embeddingModelId,
-            embeddingRuntime,
+            embeddingRuntime: 'openai',
+            llmBaseUrl: chatBaseUrl,
+            llmApiKey: chatApiKey,
+            embeddingBaseUrl,
+            embeddingApiKey,
+            vectorDbUrl,
           },
         }),
       });
@@ -577,7 +450,7 @@ export default function Week2LocalRag() {
       const res = await fetch('/api/indexed-documents', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source }),
+        body: JSON.stringify({ source, vectorDbUrl }),
       });
 
       const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
@@ -595,14 +468,14 @@ export default function Week2LocalRag() {
   };
 
   const deleteAll = async () => {
-    if (!window.confirm('Delete all indexed documents from Chroma?')) return;
+    if (!window.confirm('Delete all indexed documents from configured vector DB?')) return;
 
     setDbError(null);
     try {
       const res = await fetch('/api/indexed-documents', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deleteAll: true }),
+        body: JSON.stringify({ deleteAll: true, vectorDbUrl }),
       });
 
       const data = await parseApiResponse<IndexedDocumentsResponse & { error?: string }>(res);
@@ -628,205 +501,107 @@ export default function Week2LocalRag() {
             <p className="eyebrow">Week 2 Local RAG Studio</p>
             <h1>RAG Workspace Controls</h1>
             <p className="hero-copy">
-              Configure runtime, ingest documents, and manage indexed data. Use scope selection to chat against specific files.
+              Configure chat, embedding, and vector DB endpoints. Test each connection before ingest and chat.
             </p>
           </header>
 
           <section className="card">
-            <h2>Model Runtime Control</h2>
-            <label>
-              Runtime
-              <select
-                value={runtime}
-                onChange={event => {
-                  const next = event.currentTarget.value as RuntimeName;
-                  setRuntime(next);
-                  const nextModels = modelsByRuntime[next] ?? [];
-                  setModelId(
-                    nextModels.length > 0
-                      ? nextModels[0].id
-                      : next === 'foundry'
-                        ? 'phi-4-mini-reasoning'
-                        : 'qwen/qwen3-vl-8b',
-                  );
-                }}
-              >
-                <option value="foundry">Microsoft Foundry Local</option>
-                <option value="lmstudio">LM Studio</option>
-              </select>
-            </label>
-            <label>
-              Chat Model ID (used for answer generation)
-              {chatModels.length > 0 ? (
-                <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
-                  {chatModels.map(item => (
-                    <option key={item.id} value={item.id}>
-                      {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <>
-                  <input
-                    value={modelId}
-                    onChange={event => setModelId(event.currentTarget.value)}
-                    list="runtime-models"
-                  />
-                  <datalist id="runtime-models">
-                    {SUGGESTED_LM_MODELS.map(item => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                </>
-              )}
-            </label>
-            <div className="actions">
-              <button
-                className="btn-primary"
-                onClick={() => void startDownload(runtime, modelId, isChatModelDownloaded)}
-                disabled={Boolean(activeChatJob) || isChatModelDownloaded}
-              >
-                {activeChatJob
-                  ? 'Chat Model Download Running...'
-                  : isChatModelDownloaded
-                    ? 'Chat Model Already Downloaded'
-                    : 'Download Chat Model'}
-              </button>
-            </div>
-            {activeChatJob ? (
-              <p className="muted">
-                Chat model job `{activeChatJob.id}` using {activeChatJob.commandLabel ?? 'download command'}: {activeChatJob.status} ({activeChatJob.progress}%)
-              </p>
-            ) : null}
-            {latestChatJob?.status === 'failed' ? (
-              <p className="panel-error">Chat model download failed: {latestChatJob.error || 'Unknown error'}</p>
-            ) : null}
-            <label>
-              Embedding Runtime (used for ingest and query retrieval)
-              <select
-                value={embeddingRuntime}
-                onChange={event => {
-                  const next = event.currentTarget.value as RuntimeName;
-                  setEmbeddingRuntime(next);
-                  const nextModels = modelsByRuntime[next] ?? [];
-                  setEmbeddingModelId(
-                    nextModels.length > 0
-                      ? nextModels[0].id
-                      : next === 'foundry'
-                        ? 'nomic-embed-text-v1'
-                        : 'text-embedding-nomic-embed-text-v1.5',
-                  );
-                }}
-              >
-                <option value="lmstudio">LM Studio</option>
-                <option value="foundry">Microsoft Foundry Local</option>
-              </select>
-            </label>
-            <label>
-              Embedding Model ID (used for both ingest and query retrieval)
-              {embeddingModels.length > 0 ? (
-                <select
-                  value={embeddingModelId}
-                  onChange={event => setEmbeddingModelId(event.currentTarget.value)}
-                >
-                  {embeddingModels.map(item => (
-                    <option key={item.id} value={item.id}>
-                      {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <>
-                  <input
-                    value={embeddingModelId}
-                    onChange={event => setEmbeddingModelId(event.currentTarget.value)}
-                    list={
-                      embeddingRuntime === 'foundry'
-                        ? 'foundry-embedding-models'
-                        : 'lm-embedding-models'
-                    }
-                  />
-                  <datalist id="lm-embedding-models">
-                    {SUGGESTED_LM_EMBED_MODELS.map(item => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                  <datalist id="foundry-embedding-models">
-                    {SUGGESTED_FOUNDRY_EMBED_MODELS.map(item => (
-                      <option key={item} value={item} />
-                    ))}
-                  </datalist>
-                </>
-              )}
-            </label>
-            <div className="actions">
-              <button
-                className="btn-primary"
-                onClick={() =>
-                  void startDownload(
-                    embeddingRuntime,
-                    embeddingModelId,
-                    isEmbeddingModelDownloaded,
-                  )
-                }
-                disabled={Boolean(activeEmbeddingJob) || isEmbeddingModelDownloaded}
-              >
-                {activeEmbeddingJob
-                  ? 'Embedding Model Download Running...'
-                  : isEmbeddingModelDownloaded
-                    ? 'Embedding Model Already Downloaded'
-                    : 'Download Embedding Model'}
-              </button>
-            </div>
-            {activeEmbeddingJob ? (
-              <p className="muted">
-                Embedding model job `{activeEmbeddingJob.id}` using {activeEmbeddingJob.commandLabel ?? 'download command'}: {activeEmbeddingJob.status} ({activeEmbeddingJob.progress}%)
-              </p>
-            ) : null}
-            {latestEmbeddingJob?.status === 'failed' ? (
-              <p className="panel-error">Embedding model download failed: {latestEmbeddingJob.error || 'Unknown error'}</p>
-            ) : null}
-            {embeddingRuntime === 'foundry' &&
-            isFoundryCatalogMissingError(latestEmbeddingJob?.error) ? (
-              <p className="muted">
-                Foundry catalog does not provide this embedding model on your machine. Use LM Studio embedding model `text-embedding-nomic-embed-text-v1.5` for ingest and retrieval.
-              </p>
-            ) : null}
+            <h2>Connections</h2>
 
+            <h3>Chat Model</h3>
+            <label>
+              Chat Base URL
+              <input
+                value={chatBaseUrl}
+                onChange={event => setChatBaseUrl(event.currentTarget.value)}
+                placeholder="http://127.0.0.1:1234 or https://..."
+              />
+            </label>
+            <label>
+              Chat API Key (optional for localhost)
+              <input
+                value={chatApiKey}
+                onChange={event => setChatApiKey(event.currentTarget.value)}
+                placeholder="sk-..."
+                type="password"
+              />
+            </label>
+            <label>
+              Chat Model ID
+              <input
+                value={chatModelId}
+                onChange={event => setChatModelId(event.currentTarget.value)}
+                list="chat-models"
+              />
+              <datalist id="chat-models">
+                {SUGGESTED_CHAT_MODELS.map(item => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </label>
             <div className="actions">
-              <button className="btn-secondary" onClick={refreshModels} disabled={loadingModels}>
-                {loadingModels ? 'Refreshing...' : 'Refresh Models'}
+              <button className="btn-secondary" onClick={() => void testConnection('chat')} disabled={chatTestLoading}>
+                {chatTestLoading ? 'Testing Chat...' : 'Test Chat Model'}
               </button>
             </div>
-            {warning ? <p className="panel-error">{warning}</p> : null}
-          </section>
+            {chatTestMessage ? <p className="muted">{chatTestMessage}</p> : null}
+            {chatTestError ? <p className="panel-error">{chatTestError}</p> : null}
 
-          <section className="card">
-            <h2>Manual Download & Docs</h2>
-            <p className="muted">
-              If auto download fails, run manual commands and refresh models.
-            </p>
-            <h3>Foundry Local</h3>
-            <pre className="code-block">foundry model download phi-4-mini-reasoning</pre>
-            <h3>LM Studio CLI</h3>
-            <pre className="code-block">lms get qwen/qwen3-vl-8b --yes</pre>
-            <ul>
-              <li>
-                <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started" target="_blank" rel="noreferrer">
-                  Foundry Local - Get Started
-                </a>
-              </li>
-              <li>
-                <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/reference/reference-sdk" target="_blank" rel="noreferrer">
-                  Foundry Local - SDK/Reference
-                </a>
-              </li>
-              <li>
-                <a href="https://lmstudio.ai/docs" target="_blank" rel="noreferrer">
-                  LM Studio Documentation
-                </a>
-              </li>
-            </ul>
+            <h3>Embedding Model</h3>
+            <label>
+              Embedding Base URL
+              <input
+                value={embeddingBaseUrl}
+                onChange={event => setEmbeddingBaseUrl(event.currentTarget.value)}
+                placeholder="http://127.0.0.1:1234 or https://..."
+              />
+            </label>
+            <label>
+              Embedding API Key (optional for localhost)
+              <input
+                value={embeddingApiKey}
+                onChange={event => setEmbeddingApiKey(event.currentTarget.value)}
+                placeholder="sk-..."
+                type="password"
+              />
+            </label>
+            <label>
+              Embedding Model ID
+              <input
+                value={embeddingModelId}
+                onChange={event => setEmbeddingModelId(event.currentTarget.value)}
+                list="embedding-models"
+              />
+              <datalist id="embedding-models">
+                {SUGGESTED_EMBEDDING_MODELS.map(item => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </label>
+            <div className="actions">
+              <button className="btn-secondary" onClick={() => void testConnection('embedding')} disabled={embeddingTestLoading}>
+                {embeddingTestLoading ? 'Testing Embedding...' : 'Test Embedding Model'}
+              </button>
+            </div>
+            {embeddingTestMessage ? <p className="muted">{embeddingTestMessage}</p> : null}
+            {embeddingTestError ? <p className="panel-error">{embeddingTestError}</p> : null}
+
+            <h3>Chroma DB</h3>
+            <label>
+              Vector DB URL (Chroma)
+              <input
+                value={vectorDbUrl}
+                onChange={event => setVectorDbUrl(event.currentTarget.value)}
+                placeholder="http://localhost:8000"
+              />
+            </label>
+            <div className="actions">
+              <button className="btn-secondary" onClick={() => void testConnection('vector')} disabled={vectorTestLoading}>
+                {vectorTestLoading ? 'Testing Chroma...' : 'Test Chroma DB'}
+              </button>
+            </div>
+            {vectorTestMessage ? <p className="muted">{vectorTestMessage}</p> : null}
+            {vectorTestError ? <p className="panel-error">{vectorTestError}</p> : null}
           </section>
 
           <section className="card">
@@ -896,13 +671,14 @@ export default function Week2LocalRag() {
           </section>
 
           <section className="card">
-            <h2>Indexed Documents (Chroma)</h2>
+            <h2>Indexed Documents (Vector DB)</h2>
             <p className="muted">
               Total: {totals.documentsIndexed} document(s), {totals.chunksIndexed} chunk(s)
             </p>
             <p className="muted">
-              Current embedding runtime/model (ingest + retrieval): {embeddingRuntime} / {embeddingModelId}
+              Current embedding base/model: {embeddingBaseUrl} / {embeddingModelId}
             </p>
+            <p className="muted">Vector DB URL: {vectorDbUrl}</p>
             <div className="actions">
               <button className="btn-secondary" onClick={refreshDatabase} disabled={loadingDb}>
                 {loadingDb ? 'Refreshing...' : 'Refresh DB'}

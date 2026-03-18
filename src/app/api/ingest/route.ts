@@ -15,6 +15,9 @@ type IngestRequest = {
     chunkOverlap?: number;
     embeddingModelId?: string;
     embeddingRuntime?: RuntimeName;
+    embeddingBaseUrl?: string;
+    embeddingApiKey?: string;
+    vectorDbUrl?: string;
   };
 };
 
@@ -52,10 +55,16 @@ export async function POST(req: Request) {
     }
 
     const runtime = body.runtime || 'lmstudio';
+    if (runtime !== 'foundry' && runtime !== 'lmstudio' && runtime !== 'openai') {
+      return Response.json({ error: 'runtime must be foundry, lmstudio, or openai' }, { status: 400 });
+    }
     const chunkSize = body.options?.chunkSize ?? 800;
     const chunkOverlap = body.options?.chunkOverlap ?? 120;
     const embeddingModelId = body.options?.embeddingModelId?.trim();
     const embeddingRuntime = body.options?.embeddingRuntime;
+    const embeddingBaseUrl = body.options?.embeddingBaseUrl?.trim();
+    const embeddingApiKey = body.options?.embeddingApiKey?.trim();
+    const vectorDbUrl = body.options?.vectorDbUrl?.trim();
 
     const skipped: Array<{ name: string; reason: string }> = [];
     const errors: Array<{ name: string; message: string }> = [];
@@ -87,6 +96,9 @@ export async function POST(req: Request) {
           chunkOverlap,
           embeddingModelId,
           embeddingRuntime,
+          embeddingBaseUrl,
+          embeddingApiKey,
+          vectorDbUrl,
         });
 
         if (records.length === 0) {
@@ -104,7 +116,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const totals = await getIngestStats();
+    const totals = await getIngestStats(vectorDbUrl);
     const success = documentsIndexed > 0 && errors.length === 0;
 
     return Response.json({

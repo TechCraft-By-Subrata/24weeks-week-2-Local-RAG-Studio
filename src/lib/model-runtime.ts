@@ -3,7 +3,12 @@ import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export type RuntimeName = 'foundry' | 'lmstudio';
+export type RuntimeName = 'foundry' | 'lmstudio' | 'openai';
+
+export type RemoteApiAuth = {
+  baseUrl?: string;
+  apiKey?: string;
+};
 
 export type RuntimeModel = {
   id: string;
@@ -66,6 +71,12 @@ const PREFERRED_LMSTUDIO_MODELS = [
   'llama-3.1-8b-instruct',
 ];
 
+const PREFERRED_OPENAI_MODELS = [
+  'gpt-4o-mini',
+  'gpt-4.1-mini',
+  'gpt-4.1',
+];
+
 const DEFAULT_FOUNDRY_EMBEDDING_MODELS = [
   process.env.FOUNDRY_EMBEDDING_MODEL?.trim() || '',
   'nomic-embed-text-v1',
@@ -76,6 +87,7 @@ const DEFAULT_FOUNDRY_EMBEDDING_MODELS = [
 const DEFAULT_EMBEDDING_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
   foundry: 'nomic-embed-text-v1',
   lmstudio: 'text-embedding-nomic-embed-text-v1.5',
+  openai: 'text-embedding-3-small',
 };
 
 function uniqueNonEmpty(values: string[]): string[] {
@@ -84,7 +96,12 @@ function uniqueNonEmpty(values: string[]): string[] {
 
 function bestModelRank(runtime: RuntimeName, modelId: string): number {
   const normalized = normalizeKey(modelId);
-  const preferred = runtime === 'foundry' ? PREFERRED_FOUNDRY_MODELS : PREFERRED_LMSTUDIO_MODELS;
+  const preferred =
+    runtime === 'foundry'
+      ? PREFERRED_FOUNDRY_MODELS
+      : runtime === 'lmstudio'
+        ? PREFERRED_LMSTUDIO_MODELS
+        : PREFERRED_OPENAI_MODELS;
 
   const exact = preferred.findIndex(item => normalizeKey(item) === normalized);
   if (exact >= 0) return exact;
@@ -312,9 +329,11 @@ const LMSTUDIO_BINARIES = [
 const DEFAULT_CHAT_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
   foundry: 'phi-4-mini-reasoning',
   lmstudio: 'qwen/qwen3-vl-8b',
+  openai: 'gpt-4o-mini',
 };
 
 const LMSTUDIO_DEFAULT_BASE_URL = 'http://127.0.0.1:1234';
+const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com';
 
 export async function listModels(runtime: RuntimeName): Promise<{
   models: RuntimeModel[];
@@ -371,6 +390,14 @@ export async function listModels(runtime: RuntimeName): Promise<{
     };
   }
 
+  if (runtime === 'openai') {
+    return {
+      models: [],
+      warning:
+        'Cloud/OpenAI runtime uses manual model IDs (for example: gpt-4o-mini). Downloads are managed by your provider.',
+    };
+  }
+
   return {
     models: [],
     warning: 'Unknown runtime selected.',
@@ -387,6 +414,10 @@ export function getDownloadCommands(
       args: ['get', modelId, '--yes'],
       label: `${command} get --yes`,
     }));
+  }
+
+  if (runtime === 'openai') {
+    return [];
   }
 
   return [
@@ -468,10 +499,17 @@ export async function getEmbeddingsWithModel(
   runtime: RuntimeName,
   texts: string[],
   embeddingModelId?: string,
+  remote?: RemoteApiAuth,
 ): Promise<EmbeddingResult> {
+  if (runtime === 'openai') {
+    const cloudModel = embeddingModelId?.trim() || getDefaultEmbeddingModel('openai');
+    const embeddings = await getOpenAICompatibleEmbeddings(texts, cloudModel, remote);
+    return { embeddings, modelId: cloudModel };
+  }
+
   if (runtime === 'lmstudio') {
     const lmModel = embeddingModelId?.trim() || getDefaultEmbeddingModel('lmstudio');
-    const embeddings = await getLmStudioEmbeddings(texts, lmModel);
+    const embeddings = await getLmStudioEmbeddings(texts, lmModel, remote);
     return { embeddings, modelId: lmModel };
   }
 
@@ -514,7 +552,7 @@ export async function getEmbeddingsWithModel(
 
   for (const lmModel of lmFallbackCandidates) {
     try {
-      const embeddings = await getLmStudioEmbeddings(texts, lmModel);
+      const embeddings = await getLmStudioEmbeddings(texts, lmModel, remote);
       return { embeddings, modelId: lmModel };
     } catch (error) {
       lmErrors.push(`${lmModel}: ${error instanceof Error ? error.message : 'unknown LM Studio error'}`);
@@ -536,13 +574,31 @@ export async function getEmbeddings(
   runtime: RuntimeName,
   texts: string[],
   embeddingModelId?: string,
+  remote?: RemoteApiAuth,
 ): Promise<number[][]> {
-  const result = await getEmbeddingsWithModel(runtime, texts, embeddingModelId);
+  const result = await getEmbeddingsWithModel(runtime, texts, embeddingModelId, remote);
   return result.embeddings;
 }
 
-function getLmStudioBaseUrl(): string {
-  return (process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_DEFAULT_BASE_URL).replace(/\/+$/, '');
+function normalizeBaseUrl(value: string): string {
+  return value.replace(/\/+$/, '');
+}
+
+function getLmStudioBaseUrl(override?: string): string {
+  return normalizeBaseUrl(
+    override?.trim() || process.env.LMSTUDIO_BASE_URL?.trim() || LMSTUDIO_DEFAULT_BASE_URL,
+  );
+}
+
+function getOpenAIBaseUrl(override?: string): string {
+  return normalizeBaseUrl(
+    override?.trim() || process.env.OPENAI_BASE_URL?.trim() || OPENAI_DEFAULT_BASE_URL,
+  );
+}
+
+function getRemoteApiKey(override?: string): string | undefined {
+  const key = override?.trim() || process.env.OPENAI_API_KEY?.trim() || '';
+  return key || undefined;
 }
 
 function parseEmbeddingsOutput(stdout: string): number[][] {
@@ -565,15 +621,20 @@ function parseEmbeddingsOutput(stdout: string): number[][] {
 async function getLmStudioEmbeddings(
   texts: string[],
   embeddingModelId: string,
+  remote?: RemoteApiAuth,
 ): Promise<number[][]> {
   const modelId = embeddingModelId.trim();
   const errors: string[] = [];
 
   try {
-    const base = getLmStudioBaseUrl();
+    const base = getLmStudioBaseUrl(remote?.baseUrl);
+    const apiKey = getRemoteApiKey(remote?.apiKey);
     const response = await fetch(`${base}/v1/embeddings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model: modelId,
         input: texts,
@@ -613,6 +674,39 @@ async function getLmStudioEmbeddings(
   throw new Error(`Failed to get embeddings: ${errors.join(' | ')}`);
 }
 
+async function getOpenAICompatibleEmbeddings(
+  texts: string[],
+  embeddingModelId: string,
+  remote?: RemoteApiAuth,
+): Promise<number[][]> {
+  const modelId = embeddingModelId.trim();
+  const base = getOpenAIBaseUrl(remote?.baseUrl);
+  const apiKey = getRemoteApiKey(remote?.apiKey);
+
+  if (!apiKey && !base.startsWith('http://127.0.0.1') && !base.startsWith('http://localhost')) {
+    throw new Error('Cloud embedding endpoint requires API key.');
+  }
+
+  const response = await fetch(`${base}/v1/embeddings`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: modelId,
+      input: texts,
+    }),
+  });
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${raw.slice(0, 240)}`);
+  }
+
+  return parseEmbeddingsOutput(raw);
+}
+
 function extractGeneratedText(stdout: string): string {
   const trimmed = stdout.trim();
   if (!trimmed) return '';
@@ -643,10 +737,14 @@ export async function generateGroundedAnswer(args: {
   modelId?: string;
   prompt: string;
   timeoutMs?: number;
+  remote?: RemoteApiAuth;
 }): Promise<string> {
   const modelId = args.modelId?.trim() || getDefaultChatModel(args.runtime);
+  if (args.runtime === 'openai') {
+    return generateWithOpenAICompatible(modelId, args.prompt, args.timeoutMs ?? 45_000, args.remote);
+  }
   if (args.runtime === 'lmstudio') {
-    return generateWithLmStudio(modelId, args.prompt, args.timeoutMs ?? 45_000);
+    return generateWithLmStudio(modelId, args.prompt, args.timeoutMs ?? 45_000, args.remote);
   }
 
   const result = await runCommandWithInput(
@@ -672,16 +770,21 @@ async function generateWithLmStudio(
   modelId: string,
   prompt: string,
   timeoutMs: number,
+  remote?: RemoteApiAuth,
 ): Promise<string> {
   const errors: string[] = [];
 
   try {
-    const base = getLmStudioBaseUrl();
+    const base = getLmStudioBaseUrl(remote?.baseUrl);
+    const apiKey = getRemoteApiKey(remote?.apiKey);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
       body: JSON.stringify({
         model: modelId,
         messages: [{ role: 'user', content: prompt }],
@@ -723,4 +826,44 @@ async function generateWithLmStudio(
   }
 
   throw new Error(errors.join(' | '));
+}
+
+async function generateWithOpenAICompatible(
+  modelId: string,
+  prompt: string,
+  timeoutMs: number,
+  remote?: RemoteApiAuth,
+): Promise<string> {
+  const base = getOpenAIBaseUrl(remote?.baseUrl);
+  const apiKey = getRemoteApiKey(remote?.apiKey);
+
+  if (!apiKey && !base.startsWith('http://127.0.0.1') && !base.startsWith('http://localhost')) {
+    throw new Error('Cloud LLM endpoint requires API key.');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const response = await fetch(`${base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+    }),
+    signal: controller.signal,
+  });
+  clearTimeout(timeout);
+
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${raw.slice(0, 240)}`);
+  }
+
+  const text = extractGeneratedText(raw);
+  if (!text) throw new Error('Empty completion payload');
+  return text;
 }

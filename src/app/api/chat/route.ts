@@ -13,6 +13,11 @@ type ChatRequest = {
     sourceFilter?: string[];
     embeddingModelId?: string;
     embeddingRuntime?: RuntimeName;
+    llmBaseUrl?: string;
+    llmApiKey?: string;
+    embeddingBaseUrl?: string;
+    embeddingApiKey?: string;
+    vectorDbUrl?: string;
   };
 };
 
@@ -31,6 +36,9 @@ export async function POST(req: Request) {
   }
 
   const runtime = body.runtime || 'lmstudio';
+  if (runtime !== 'foundry' && runtime !== 'lmstudio' && runtime !== 'openai') {
+    return Response.json({ error: 'runtime must be foundry, lmstudio, or openai' }, { status: 400 });
+  }
   const modelId = body.modelId?.trim();
   const topK = body.options?.topK ?? 5;
   const minScore = body.options?.minScore ?? 0.2;
@@ -38,6 +46,11 @@ export async function POST(req: Request) {
     body.options?.sourceFilter?.map(item => item.trim()).filter(Boolean) ?? [];
   const embeddingModelId = body.options?.embeddingModelId?.trim();
   const embeddingRuntime = body.options?.embeddingRuntime;
+  const llmBaseUrl = body.options?.llmBaseUrl?.trim();
+  const llmApiKey = body.options?.llmApiKey?.trim();
+  const embeddingBaseUrl = body.options?.embeddingBaseUrl?.trim();
+  const embeddingApiKey = body.options?.embeddingApiKey?.trim();
+  const vectorDbUrl = body.options?.vectorDbUrl?.trim();
   const start = Date.now();
 
   let hits: Awaited<ReturnType<typeof searchChunks>>;
@@ -50,6 +63,11 @@ export async function POST(req: Request) {
       sourceFilter,
       embeddingModelId,
       embeddingRuntime,
+      {
+        baseUrl: embeddingBaseUrl,
+        apiKey: embeddingApiKey,
+      },
+      vectorDbUrl,
     );
   } catch (error) {
     return Response.json(
@@ -106,6 +124,10 @@ export async function POST(req: Request) {
       modelId,
       prompt: `${systemPrompt}\n\nQuestion:\n${query}\n\nContext:\n${context}\n\nReturn a concise answer with citations.`,
       timeoutMs: 45_000,
+      remote: {
+        baseUrl: llmBaseUrl,
+        apiKey: llmApiKey,
+      },
     });
   } catch (error) {
     generationWarning =

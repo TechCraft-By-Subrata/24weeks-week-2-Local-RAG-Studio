@@ -1,5 +1,9 @@
 import { ChromaClient, type Collection } from 'chromadb';
-import { getEmbeddingsWithModel, type RuntimeName } from './model-runtime';
+import {
+  getEmbeddingsWithModel,
+  type RemoteApiAuth,
+  type RuntimeName,
+} from './model-runtime';
 
 export type IndexedChunk = {
   id: string;
@@ -22,13 +26,18 @@ export type IndexedDocumentSummary = {
 const CHROMA_COLLECTION_NAME = 'rag-studio-collection';
 
 let collection: Collection | null = null;
+const collectionByUrl = new Map<string, Collection>();
 
-async function getCollection(): Promise<Collection> {
-  if (collection) {
-    return collection;
-  }
+function getChromaUrl(override?: string): string {
+  return override?.trim() || process.env.CHROMA_URL?.trim() || 'http://localhost:8000';
+}
 
-  const chromaUrl = process.env.CHROMA_URL?.trim() || 'http://localhost:8000';
+async function getCollection(chromaUrlOverride?: string): Promise<Collection> {
+  const chromaUrl = getChromaUrl(chromaUrlOverride);
+  const existing = collectionByUrl.get(chromaUrl);
+  if (existing) return existing;
+  if (!chromaUrlOverride && collection) return collection;
+
   let client: ChromaClient;
   try {
     const parsed = new URL(chromaUrl);
@@ -43,8 +52,17 @@ async function getCollection(): Promise<Collection> {
     );
   }
 
-  collection = await client.getOrCreateCollection({ name: CHROMA_COLLECTION_NAME });
-  return collection;
+  const next = await client.getOrCreateCollection({
+    name: CHROMA_COLLECTION_NAME,
+    // We always provide embeddings from our own runtime(s), so disable
+    // Chroma client's default embedding-function auto resolution.
+    embeddingFunction: null,
+  });
+  collectionByUrl.set(chromaUrl, next);
+  if (!chromaUrlOverride) {
+    collection = next;
+  }
+  return next;
 }
 
 
@@ -82,6 +100,9 @@ export async function ingestDocument(args: {
   chunkOverlap: number;
   embeddingModelId?: string;
   embeddingRuntime?: RuntimeName;
+  embeddingBaseUrl?: string;
+  embeddingApiKey?: string;
+  vectorDbUrl?: string;
 }) {
   const parts = chunkText(args.text, args.chunkSize, args.chunkOverlap);
   if (parts.length === 0) {
@@ -92,9 +113,13 @@ export async function ingestDocument(args: {
     args.embeddingRuntime ?? args.runtime,
     parts,
     args.embeddingModelId,
+    {
+      baseUrl: args.embeddingBaseUrl,
+      apiKey: args.embeddingApiKey,
+    },
   );
   const embeddings = embeddingResult.embeddings;
-  const collection = await getCollection();
+  const collection = await getCollection(args.vectorDbUrl);
 
   const records = parts.map((part, index) => {
     const chunkId = `${args.source}::${index + 1}`;
@@ -132,15 +157,18 @@ export async function searchChunks(
   sourceFilter?: string[],
   embeddingModelId?: string,
   embeddingRuntime?: RuntimeName,
+  remote?: RemoteApiAuth,
+  vectorDbUrl?: string,
 ) {
   const queryEmbedding = (
     await getEmbeddingsWithModel(
       embeddingRuntime ?? runtime,
       [query],
       embeddingModelId,
+      remote,
     )
   ).embeddings;
-  const collection = await getCollection();
+  const collection = await getCollection(vectorDbUrl);
   const cleanSourceFilter = (sourceFilter ?? []).map(item => item.trim()).filter(Boolean);
 
   const results = await collection.query({
@@ -188,8 +216,8 @@ export async function searchChunks(
   return filtered.length > 0 ? filtered : hits;
 }
 
-export async function listIndexedDocuments(): Promise<IndexedDocumentSummary[]> {
-  const collection = await getCollection();
+export async function listIndexedDocuments(vectorDbUrl?: string): Promise<IndexedDocumentSummary[]> {
+  const collection = await getCollection(vectorDbUrl);
   const rows = await collection.get({ include: ['metadatas'], limit: 10_000 });
   const bySource = new Map<string, IndexedDocumentSummary>();
 
@@ -235,8 +263,8 @@ export async function listIndexedDocuments(): Promise<IndexedDocumentSummary[]> 
     );
 }
 
-export async function getIngestStats() {
-  const collection = await getCollection();
+export async function getIngestStats(vectorDbUrl?: string) {
+  const collection = await getCollection(vectorDbUrl);
   const rows = await collection.get({ include: ['metadatas'] });
   const uniqueSources = new Set<string>();
 
@@ -251,16 +279,16 @@ export async function getIngestStats() {
   };
 }
 
-export async function deleteAllDocuments() {
-  const collection = await getCollection();
+export async function deleteAllDocuments(vectorDbUrl?: string) {
+  const collection = await getCollection(vectorDbUrl);
   const rows = await collection.get({ include: [] });
   if (rows.ids.length === 0) return;
   await collection.delete({ ids: rows.ids });
 }
 
-export async function deleteDocumentBySource(source: string) {
+export async function deleteDocumentBySource(source: string, vectorDbUrl?: string) {
   const clean = source.trim();
   if (!clean) return;
-  const collection = await getCollection();
+  const collection = await getCollection(vectorDbUrl);
   await collection.delete({ where: { source: clean } });
 }
