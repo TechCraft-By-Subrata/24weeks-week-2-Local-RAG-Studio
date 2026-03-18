@@ -14,6 +14,7 @@ type IngestRequest = {
     chunkSize?: number;
     chunkOverlap?: number;
     embeddingModelId?: string;
+    embeddingRuntime?: RuntimeName;
   };
 };
 
@@ -54,6 +55,7 @@ export async function POST(req: Request) {
     const chunkSize = body.options?.chunkSize ?? 800;
     const chunkOverlap = body.options?.chunkOverlap ?? 120;
     const embeddingModelId = body.options?.embeddingModelId?.trim();
+    const embeddingRuntime = body.options?.embeddingRuntime;
 
     const skipped: Array<{ name: string; reason: string }> = [];
     const errors: Array<{ name: string; message: string }> = [];
@@ -84,6 +86,7 @@ export async function POST(req: Request) {
           chunkSize,
           chunkOverlap,
           embeddingModelId,
+          embeddingRuntime,
         });
 
         if (records.length === 0) {

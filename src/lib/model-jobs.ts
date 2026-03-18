@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { getDownloadCommands, type RuntimeName } from './model-runtime';
+import { getDownloadCommands, runCommand, type RuntimeName } from './model-runtime';
 
 export type ModelDownloadJob = {
   id: string;
@@ -21,6 +21,43 @@ const STALL_TIMEOUT_MS = 90 * 1000;
 
 function genId() {
   return `job_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeModelKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function modelIdsMatch(a: string, b: string): boolean {
+  const left = normalizeModelKey(a);
+  const right = normalizeModelKey(b);
+  return left === right || left.includes(right) || right.includes(left);
+}
+
+function parseFoundryModelAliases(stdout: string): string[] {
+  const aliases = new Set<string>();
+  const lines = stdout.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (trimmed.startsWith('Alias') || /^[-]{3,}$/.test(trimmed)) continue;
+    const firstCell = line.slice(0, 30).trim();
+    if (!firstCell) continue;
+    aliases.add(firstCell);
+  }
+  return Array.from(aliases);
+}
+
+async function isFoundryModelInCatalog(modelId: string): Promise<boolean | null> {
+  const checks = ['foundry', '/opt/homebrew/bin/foundry', '/usr/local/bin/foundry'];
+  for (const cmd of checks) {
+    const result = await runCommand(cmd, ['model', 'list'], 12_000);
+    if (!result.ok) continue;
+    const aliases = parseFoundryModelAliases(result.stdout);
+    if (aliases.length === 0) return null;
+    return aliases.some(alias => modelIdsMatch(alias, modelId));
+  }
+
+  return null;
 }
 
 function extractProgress(log: string): number | null {
@@ -159,6 +196,19 @@ export function startDownloadJob(runtime: RuntimeName, modelId: string) {
   jobs.set(job.id, job);
 
   void (async () => {
+    if (runtime === 'foundry') {
+      const found = await isFoundryModelInCatalog(modelId);
+      if (found === false) {
+        job.status = 'failed';
+        job.error = [
+          `Model "${modelId}" is not available in your Foundry catalog.`,
+          'Use LM Studio for embedding models (for example: text-embedding-nomic-embed-text-v1.5).',
+        ].join(' ');
+        job.updatedAt = Date.now();
+        return;
+      }
+    }
+
     const attempts = getDownloadCommands(runtime, modelId);
 
     for (const attempt of attempts) {

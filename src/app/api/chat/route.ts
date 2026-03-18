@@ -12,6 +12,7 @@ type ChatRequest = {
     systemPrompt?: string;
     sourceFilter?: string[];
     embeddingModelId?: string;
+    embeddingRuntime?: RuntimeName;
   };
 };
 
@@ -36,11 +37,20 @@ export async function POST(req: Request) {
   const sourceFilter =
     body.options?.sourceFilter?.map(item => item.trim()).filter(Boolean) ?? [];
   const embeddingModelId = body.options?.embeddingModelId?.trim();
+  const embeddingRuntime = body.options?.embeddingRuntime;
   const start = Date.now();
 
   let hits: Awaited<ReturnType<typeof searchChunks>>;
   try {
-    hits = await searchChunks(runtime, query, topK, minScore, sourceFilter, embeddingModelId);
+    hits = await searchChunks(
+      runtime,
+      query,
+      topK,
+      minScore,
+      sourceFilter,
+      embeddingModelId,
+      embeddingRuntime,
+    );
   } catch (error) {
     return Response.json(
       {

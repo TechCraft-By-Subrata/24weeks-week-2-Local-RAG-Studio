@@ -81,6 +81,7 @@ export async function ingestDocument(args: {
   chunkSize: number;
   chunkOverlap: number;
   embeddingModelId?: string;
+  embeddingRuntime?: RuntimeName;
 }) {
   const parts = chunkText(args.text, args.chunkSize, args.chunkOverlap);
   if (parts.length === 0) {
@@ -88,7 +89,7 @@ export async function ingestDocument(args: {
   }
 
   const embeddingResult = await getEmbeddingsWithModel(
-    args.runtime,
+    args.embeddingRuntime ?? args.runtime,
     parts,
     args.embeddingModelId,
   );
@@ -130,9 +131,14 @@ export async function searchChunks(
   minScore: number,
   sourceFilter?: string[],
   embeddingModelId?: string,
+  embeddingRuntime?: RuntimeName,
 ) {
   const queryEmbedding = (
-    await getEmbeddingsWithModel(runtime, [query], embeddingModelId)
+    await getEmbeddingsWithModel(
+      embeddingRuntime ?? runtime,
+      [query],
+      embeddingModelId,
+    )
   ).embeddings;
   const collection = await getCollection();
   const cleanSourceFilter = (sourceFilter ?? []).map(item => item.trim()).filter(Boolean);

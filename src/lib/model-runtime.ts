@@ -51,6 +51,21 @@ const PROJECT_REQUIRED_FOUNDRY_MODELS = [
   'phi-3.5-mini',
 ];
 
+const PREFERRED_FOUNDRY_MODELS = [
+  'phi-4-mini-reasoning',
+  'phi-4',
+  'phi-4-mini',
+  'phi-3.5-mini',
+  'qwen2.5-7b',
+];
+
+const PREFERRED_LMSTUDIO_MODELS = [
+  'qwen/qwen3-vl-8b',
+  'qwen2.5-7b-instruct',
+  'qwen2.5-coder-7b-instruct',
+  'llama-3.1-8b-instruct',
+];
+
 const DEFAULT_FOUNDRY_EMBEDDING_MODELS = [
   process.env.FOUNDRY_EMBEDDING_MODEL?.trim() || '',
   'nomic-embed-text-v1',
@@ -65,6 +80,32 @@ const DEFAULT_EMBEDDING_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
 
 function uniqueNonEmpty(values: string[]): string[] {
   return Array.from(new Set(values.map(item => item.trim()).filter(Boolean)));
+}
+
+function bestModelRank(runtime: RuntimeName, modelId: string): number {
+  const normalized = normalizeKey(modelId);
+  const preferred = runtime === 'foundry' ? PREFERRED_FOUNDRY_MODELS : PREFERRED_LMSTUDIO_MODELS;
+
+  const exact = preferred.findIndex(item => normalizeKey(item) === normalized);
+  if (exact >= 0) return exact;
+
+  const partial = preferred.findIndex(item => normalized.includes(normalizeKey(item)));
+  if (partial >= 0) return partial + 10;
+
+  return 999;
+}
+
+function sortModels(runtime: RuntimeName, models: RuntimeModel[]): RuntimeModel[] {
+  return [...models].sort((a, b) => {
+    const rankDiff = bestModelRank(runtime, a.id) - bestModelRank(runtime, b.id);
+    if (rankDiff !== 0) return rankDiff;
+
+    if (a.downloaded !== b.downloaded) {
+      return a.downloaded ? -1 : 1;
+    }
+
+    return a.id.localeCompare(b.id, undefined, { sensitivity: 'base' });
+  });
 }
 
 async function runCommand(
@@ -202,6 +243,60 @@ function listProjectRequiredFoundryModels(): RuntimeModel[] {
   });
 }
 
+type FoundryAliasRow = {
+  alias: string;
+  modelIds: string[];
+};
+
+function parseFoundryAliasRows(stdout: string): FoundryAliasRow[] {
+  const byAlias = new Map<string, Set<string>>();
+  const lines = stdout.split('\n');
+  let currentAlias = '';
+
+  for (const line of lines) {
+    const alias = line.slice(0, 30).trim();
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('Alias') || /^[-]{3,}$/.test(trimmed)) {
+      continue;
+    }
+
+    if (alias) {
+      currentAlias = alias;
+    }
+    if (!currentAlias) continue;
+
+    const modelIdMatch = line.match(/([A-Za-z0-9._-]+:[0-9]+)\s*$/);
+    if (!modelIdMatch) continue;
+
+    const modelId = modelIdMatch[1];
+    const set = byAlias.get(currentAlias) ?? new Set<string>();
+    set.add(modelId);
+    byAlias.set(currentAlias, set);
+  }
+
+  return Array.from(byAlias.entries()).map(([alias, ids]) => ({
+    alias,
+    modelIds: Array.from(ids),
+  }));
+}
+
+function parseFoundryModels(stdout: string): RuntimeModel[] {
+  const installedModelKeys = new Set(
+    getFoundryInstalledFolderNames().map(name => normalizeKey(name)),
+  );
+
+  return parseFoundryAliasRows(stdout).map(row => {
+    const downloaded = row.modelIds.some(modelId =>
+      installedModelKeys.has(normalizeKey(modelId)),
+    );
+    return {
+      id: row.alias,
+      provider: 'foundry' as const,
+      downloaded,
+    };
+  });
+}
+
 const FOUNDRY_BINARIES = [
   'foundry',
   '/opt/homebrew/bin/foundry',
@@ -226,8 +321,27 @@ export async function listModels(runtime: RuntimeName): Promise<{
   warning?: string;
 }> {
   if (runtime === 'foundry') {
-    const models = listProjectRequiredFoundryModels();
-    return { models };
+    const diagnostics: string[] = [];
+    for (const command of FOUNDRY_BINARIES) {
+      const result = await runCommand(command, ['model', 'list'], 12_000);
+      if (!result.ok) {
+        diagnostics.push(
+          `${command} model list -> ${result.timedOut ? 'timeout' : result.stderr.trim() || 'failed'}`,
+        );
+        continue;
+      }
+
+      const models = parseFoundryModels(result.stdout);
+      if (models.length > 0) {
+        return { models: sortModels('foundry', models) };
+      }
+    }
+
+    const fallback = sortModels('foundry', listProjectRequiredFoundryModels());
+    return {
+      models: fallback,
+      warning: diagnostics.length > 0 ? `Foundry model listing fallback used. ${diagnostics.join(' | ')}` : undefined,
+    };
   }
 
   if (runtime === 'lmstudio') {
@@ -248,7 +362,7 @@ export async function listModels(runtime: RuntimeName): Promise<{
       }
 
       const models = parseLmStudioModels(result.stdout);
-      if (models.length > 0) return { models };
+      if (models.length > 0) return { models: sortModels('lmstudio', models) };
     }
 
     return {
