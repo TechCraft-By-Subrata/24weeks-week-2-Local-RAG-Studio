@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type RuntimeName = 'foundry' | 'lmstudio';
 
@@ -140,6 +140,7 @@ export default function Week2LocalRag() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
 
   const selectedModelInfo = useMemo(
     () => models.find(model => model.id === modelId),
@@ -229,6 +230,12 @@ export default function Week2LocalRag() {
 
     return () => clearInterval(timer);
   }, [activeJob, refreshModels]);
+
+  useEffect(() => {
+    const node = chatLogRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [chatMessages, chatLoading]);
 
   const startDownload = async () => {
     setWarning(undefined);
@@ -687,7 +694,7 @@ export default function Week2LocalRag() {
               </p>
             </header>
 
-            <div className="chat-log">
+            <div className="chat-log" ref={chatLogRef}>
               {chatMessages.length === 0 ? (
                 <p className="muted empty-chat">
                   Ask a question. Answers will appear here with citations.
