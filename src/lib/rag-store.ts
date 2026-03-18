@@ -1,5 +1,5 @@
 import { ChromaClient, type Collection } from 'chromadb';
-import { getEmbeddings, type RuntimeName } from './model-runtime';
+import { getEmbeddingsWithModel, type RuntimeName } from './model-runtime';
 
 export type IndexedChunk = {
   id: string;
@@ -9,12 +9,14 @@ export type IndexedChunk = {
   text: string;
   tokenCount: number;
   createdAt: string;
+  embeddingModel: string;
 };
 
 export type IndexedDocumentSummary = {
   source: string;
   chunks: number;
   lastIndexedAt: string | null;
+  embeddingModels: string[];
 };
 
 const CHROMA_COLLECTION_NAME = 'rag-studio-collection';
@@ -78,13 +80,19 @@ export async function ingestDocument(args: {
   page?: number | null;
   chunkSize: number;
   chunkOverlap: number;
+  embeddingModelId?: string;
 }) {
   const parts = chunkText(args.text, args.chunkSize, args.chunkOverlap);
   if (parts.length === 0) {
     return [];
   }
 
-  const embeddings = await getEmbeddings(args.runtime, parts);
+  const embeddingResult = await getEmbeddingsWithModel(
+    args.runtime,
+    parts,
+    args.embeddingModelId,
+  );
+  const embeddings = embeddingResult.embeddings;
   const collection = await getCollection();
 
   const records = parts.map((part, index) => {
@@ -96,6 +104,7 @@ export async function ingestDocument(args: {
       text: part,
       tokenCount: Math.ceil(part.length / 4),
       createdAt: new Date().toISOString(),
+      embeddingModel: embeddingResult.modelId,
     };
   });
 
@@ -103,7 +112,12 @@ export async function ingestDocument(args: {
     ids: records.map(r => r.id),
     embeddings: embeddings,
     documents: records.map(r => r.text),
-    metadatas: records.map(r => ({ source: r.source, page: r.page, createdAt: r.createdAt })),
+    metadatas: records.map(r => ({
+      source: r.source,
+      page: r.page,
+      createdAt: r.createdAt,
+      embeddingModel: r.embeddingModel,
+    })),
   });
   
   return records;
@@ -115,8 +129,11 @@ export async function searchChunks(
   topK: number,
   minScore: number,
   sourceFilter?: string[],
+  embeddingModelId?: string,
 ) {
-  const queryEmbedding = await getEmbeddings(runtime, [query]);
+  const queryEmbedding = (
+    await getEmbeddingsWithModel(runtime, [query], embeddingModelId)
+  ).embeddings;
   const collection = await getCollection();
   const cleanSourceFilter = (sourceFilter ?? []).map(item => item.trim()).filter(Boolean);
 
@@ -172,19 +189,21 @@ export async function listIndexedDocuments(): Promise<IndexedDocumentSummary[]> 
 
   for (let index = 0; index < rows.ids.length; index += 1) {
     const metadata = rows.metadatas[index] as
-      | { source?: string; createdAt?: string }
+      | { source?: string; createdAt?: string; embeddingModel?: string }
       | null
       | undefined;
     const source = metadata?.source;
     if (!source) continue;
 
     const createdAt = metadata?.createdAt ?? null;
+    const embeddingModel = metadata?.embeddingModel?.trim() || 'unknown';
     const current = bySource.get(source);
     if (!current) {
       bySource.set(source, {
         source,
         chunks: 1,
         lastIndexedAt: createdAt,
+        embeddingModels: [embeddingModel],
       });
       continue;
     }
@@ -193,11 +212,21 @@ export async function listIndexedDocuments(): Promise<IndexedDocumentSummary[]> 
     if (createdAt && (!current.lastIndexedAt || createdAt > current.lastIndexedAt)) {
       current.lastIndexedAt = createdAt;
     }
+    if (!current.embeddingModels.includes(embeddingModel)) {
+      current.embeddingModels.push(embeddingModel);
+    }
   }
 
-  return Array.from(bySource.values()).sort((a, b) =>
-    a.source.localeCompare(b.source, undefined, { sensitivity: 'base' }),
-  );
+  return Array.from(bySource.values())
+    .map(item => ({
+      ...item,
+      embeddingModels: [...item.embeddingModels].sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: 'base' }),
+      ),
+    }))
+    .sort((a, b) =>
+      a.source.localeCompare(b.source, undefined, { sensitivity: 'base' }),
+    );
 }
 
 export async function getIngestStats() {

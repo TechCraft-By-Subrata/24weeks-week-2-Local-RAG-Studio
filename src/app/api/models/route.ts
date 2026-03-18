@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const runtime =
-    (req.nextUrl.searchParams.get('runtime') as RuntimeName | null) ?? 'foundry';
+    (req.nextUrl.searchParams.get('runtime') as RuntimeName | null) ?? 'lmstudio';
 
   if (runtime !== 'foundry' && runtime !== 'lmstudio') {
     return Response.json({ error: 'runtime must be foundry or lmstudio' }, { status: 400 });

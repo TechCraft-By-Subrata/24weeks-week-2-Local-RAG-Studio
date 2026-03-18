@@ -13,6 +13,7 @@ type IngestRequest = {
   options?: {
     chunkSize?: number;
     chunkOverlap?: number;
+    embeddingModelId?: string;
   };
 };
 
@@ -49,9 +50,10 @@ export async function POST(req: Request) {
       return Response.json({ error: 'files[] is required' }, { status: 400 });
     }
 
-    const runtime = body.runtime || 'foundry';
+    const runtime = body.runtime || 'lmstudio';
     const chunkSize = body.options?.chunkSize ?? 800;
     const chunkOverlap = body.options?.chunkOverlap ?? 120;
+    const embeddingModelId = body.options?.embeddingModelId?.trim();
 
     const skipped: Array<{ name: string; reason: string }> = [];
     const errors: Array<{ name: string; message: string }> = [];
@@ -81,6 +83,7 @@ export async function POST(req: Request) {
           text,
           chunkSize,
           chunkOverlap,
+          embeddingModelId,
         });
 
         if (records.length === 0) {

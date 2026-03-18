@@ -38,6 +38,11 @@ type ParsedEmbeddings = {
   data?: Array<{ embedding?: number[] }>;
 };
 
+export type EmbeddingResult = {
+  embeddings: number[][];
+  modelId: string;
+};
+
 const PROJECT_REQUIRED_FOUNDRY_MODELS = [
   'nomic-embed-text-v1',
   'phi-4-mini-reasoning',
@@ -45,6 +50,22 @@ const PROJECT_REQUIRED_FOUNDRY_MODELS = [
   'phi-4',
   'phi-3.5-mini',
 ];
+
+const DEFAULT_FOUNDRY_EMBEDDING_MODELS = [
+  process.env.FOUNDRY_EMBEDDING_MODEL?.trim() || '',
+  'nomic-embed-text-v1',
+  'text-embedding-nomic-embed-text-v1.5',
+  'nomic-embed-text-v1.5',
+];
+
+const DEFAULT_EMBEDDING_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
+  foundry: 'nomic-embed-text-v1',
+  lmstudio: 'text-embedding-nomic-embed-text-v1.5',
+};
+
+function uniqueNonEmpty(values: string[]): string[] {
+  return Array.from(new Set(values.map(item => item.trim()).filter(Boolean)));
+}
 
 async function runCommand(
   command: string,
@@ -161,10 +182,17 @@ function getFoundryInstalledFolderNames(): string[] {
 
 function listProjectRequiredFoundryModels(): RuntimeModel[] {
   const installedFolders = getFoundryInstalledFolderNames().map(normalizeKey);
+  const embeddingCandidates = uniqueNonEmpty(DEFAULT_FOUNDRY_EMBEDDING_MODELS).map(normalizeKey);
+  const embeddingAvailable = installedFolders.some(folder =>
+    embeddingCandidates.some(modelNorm => folder.includes(modelNorm)),
+  );
 
   return PROJECT_REQUIRED_FOUNDRY_MODELS.map(modelId => {
     const modelNorm = normalizeKey(modelId);
-    const downloaded = installedFolders.some(folder => folder.includes(modelNorm));
+    const downloaded =
+      modelId === 'nomic-embed-text-v1'
+        ? embeddingAvailable
+        : installedFolders.some(folder => folder.includes(modelNorm));
 
     return {
       id: modelId,
@@ -188,7 +216,7 @@ const LMSTUDIO_BINARIES = [
 
 const DEFAULT_CHAT_MODEL_BY_RUNTIME: Record<RuntimeName, string> = {
   foundry: 'phi-4-mini-reasoning',
-  lmstudio: 'qwen2.5-7b-instruct',
+  lmstudio: 'qwen/qwen3-vl-8b',
 };
 
 const LMSTUDIO_DEFAULT_BASE_URL = 'http://127.0.0.1:1234';
@@ -318,24 +346,85 @@ async function runCommandWithInput(
   });
 }
 
-export async function getEmbeddings(runtime: RuntimeName, texts: string[]): Promise<number[][]> {
+export function getDefaultEmbeddingModel(runtime: RuntimeName): string {
+  return DEFAULT_EMBEDDING_MODEL_BY_RUNTIME[runtime];
+}
+
+export async function getEmbeddingsWithModel(
+  runtime: RuntimeName,
+  texts: string[],
+  embeddingModelId?: string,
+): Promise<EmbeddingResult> {
   if (runtime === 'lmstudio') {
-    return getLmStudioEmbeddings(texts);
+    const lmModel = embeddingModelId?.trim() || getDefaultEmbeddingModel('lmstudio');
+    const embeddings = await getLmStudioEmbeddings(texts, lmModel);
+    return { embeddings, modelId: lmModel };
   }
 
-  const modelId = 'nomic-embed-text-v1';
   const payload = JSON.stringify({ texts });
-  const result = await runCommandWithInput(
-    FOUNDRY_BINARIES[0],
-    ['model', 'run', modelId],
-    payload,
-  );
+  const modelCandidates = uniqueNonEmpty([
+    embeddingModelId?.trim() || '',
+    ...DEFAULT_FOUNDRY_EMBEDDING_MODELS,
+  ]);
+  const errors: string[] = [];
 
-  if (!result.ok) {
-    throw new Error(`Failed to get embeddings: ${result.stderr}`);
+  for (const modelId of modelCandidates) {
+    const result = await runCommandWithInput(
+      FOUNDRY_BINARIES[0],
+      ['model', 'run', modelId],
+      payload,
+    );
+
+    if (!result.ok) {
+      errors.push(`${modelId}: ${result.stderr.trim() || 'failed'}`);
+      continue;
+    }
+
+    try {
+      return {
+        embeddings: parseEmbeddingsOutput(result.stdout),
+        modelId,
+      };
+    } catch (error) {
+      errors.push(
+        `${modelId}: parse failed (${error instanceof Error ? error.message : 'invalid output'})`,
+      );
+    }
   }
 
-  return parseEmbeddingsOutput(result.stdout);
+  const lmFallbackCandidates = uniqueNonEmpty([
+    embeddingModelId?.trim() || '',
+    getDefaultEmbeddingModel('lmstudio'),
+  ]);
+  const lmErrors: string[] = [];
+
+  for (const lmModel of lmFallbackCandidates) {
+    try {
+      const embeddings = await getLmStudioEmbeddings(texts, lmModel);
+      return { embeddings, modelId: lmModel };
+    } catch (error) {
+      lmErrors.push(`${lmModel}: ${error instanceof Error ? error.message : 'unknown LM Studio error'}`);
+    }
+  }
+
+  throw new Error(
+    [
+      `Failed to get embeddings from Foundry. Tried: ${modelCandidates.join(', ')}`,
+      'Download one of these models and retry.',
+      ...modelCandidates.map(modelId => `- foundry model download ${modelId}`),
+      `Foundry details: ${errors.join(' | ')}`,
+      `LM Studio fallback failed: ${lmErrors.join(' | ')}`,
+    ].join('\n'),
+  );
+}
+
+export async function getEmbeddings(
+  runtime: RuntimeName,
+  texts: string[],
+  embeddingModelId?: string,
+): Promise<number[][]> {
+  const result = await getEmbeddingsWithModel(runtime, texts, embeddingModelId);
+  return result.embeddings;
 }
 
 function getLmStudioBaseUrl(): string {
@@ -359,8 +448,11 @@ function parseEmbeddingsOutput(stdout: string): number[][] {
   throw new Error('Invalid embeddings format from model.');
 }
 
-async function getLmStudioEmbeddings(texts: string[]): Promise<number[][]> {
-  const modelId = 'text-embedding-nomic-embed-text-v1.5';
+async function getLmStudioEmbeddings(
+  texts: string[],
+  embeddingModelId: string,
+): Promise<number[][]> {
+  const modelId = embeddingModelId.trim();
   const errors: string[] = [];
 
   try {

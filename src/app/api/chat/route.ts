@@ -11,6 +11,7 @@ type ChatRequest = {
     temperature?: number;
     systemPrompt?: string;
     sourceFilter?: string[];
+    embeddingModelId?: string;
   };
 };
 
@@ -28,15 +29,29 @@ export async function POST(req: Request) {
     return Response.json({ error: 'query is required' }, { status: 400 });
   }
 
-  const runtime = body.runtime || 'foundry';
+  const runtime = body.runtime || 'lmstudio';
   const modelId = body.modelId?.trim();
   const topK = body.options?.topK ?? 5;
   const minScore = body.options?.minScore ?? 0.2;
   const sourceFilter =
     body.options?.sourceFilter?.map(item => item.trim()).filter(Boolean) ?? [];
+  const embeddingModelId = body.options?.embeddingModelId?.trim();
   const start = Date.now();
 
-  const hits = await searchChunks(runtime, query, topK, minScore, sourceFilter);
+  let hits: Awaited<ReturnType<typeof searchChunks>>;
+  try {
+    hits = await searchChunks(runtime, query, topK, minScore, sourceFilter, embeddingModelId);
+  } catch (error) {
+    return Response.json(
+      {
+        error:
+          error instanceof Error
+            ? `Retrieval failed: ${error.message}`
+            : 'Retrieval failed',
+      },
+      { status: 400 },
+    );
+  }
 
   if (hits.length === 0) {
     return Response.json({

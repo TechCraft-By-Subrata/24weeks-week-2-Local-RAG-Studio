@@ -61,6 +61,7 @@ type IndexedDocument = {
   source: string;
   chunks: number;
   lastIndexedAt: string | null;
+  embeddingModels: string[];
 };
 
 type IndexedDocumentsResponse = {
@@ -81,9 +82,20 @@ type ChatMessage = {
 };
 
 const SUGGESTED_LM_MODELS = [
+  'qwen/qwen3-vl-8b',
   'qwen2.5-7b-instruct',
   'llama-3.1-8b-instruct',
   'qwen2.5-coder-7b-instruct',
+];
+
+const SUGGESTED_LM_EMBED_MODELS = [
+  'text-embedding-nomic-embed-text-v1.5',
+];
+
+const SUGGESTED_FOUNDRY_EMBED_MODELS = [
+  'nomic-embed-text-v1',
+  'text-embedding-nomic-embed-text-v1.5',
+  'nomic-embed-text-v1.5',
 ];
 
 const SKIPPED_REASON_LABELS: Record<string, string> = {
@@ -115,9 +127,20 @@ function makeMessageId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeModelKey(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function modelIdsMatch(a: string, b: string): boolean {
+  const left = normalizeModelKey(a);
+  const right = normalizeModelKey(b);
+  return left === right || left.includes(right) || right.includes(left);
+}
+
 export default function Week2LocalRag() {
-  const [runtime, setRuntime] = useState<RuntimeName>('foundry');
-  const [modelId, setModelId] = useState('phi-4-mini-reasoning');
+  const [runtime, setRuntime] = useState<RuntimeName>('lmstudio');
+  const [modelId, setModelId] = useState('qwen/qwen3-vl-8b');
+  const [embeddingModelId, setEmbeddingModelId] = useState('text-embedding-nomic-embed-text-v1.5');
   const [models, setModels] = useState<RuntimeModel[]>([]);
   const [jobs, setJobs] = useState<ModelJob[]>([]);
   const [warning, setWarning] = useState<string | undefined>();
@@ -142,25 +165,56 @@ export default function Week2LocalRag() {
   const [chatLoading, setChatLoading] = useState(false);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
 
-  const selectedModelInfo = useMemo(
-    () => models.find(model => model.id === modelId),
+  const selectedChatModelInfo = useMemo(
+    () => models.find(model => modelIdsMatch(model.id, modelId)),
     [models, modelId],
   );
-  const isAlreadyDownloaded = Boolean(selectedModelInfo?.downloaded);
+  const selectedEmbeddingModelInfo = useMemo(
+    () => models.find(model => modelIdsMatch(model.id, embeddingModelId)),
+    [models, embeddingModelId],
+  );
+  const isChatModelDownloaded = Boolean(selectedChatModelInfo?.downloaded);
+  const isEmbeddingModelDownloaded = Boolean(selectedEmbeddingModelInfo?.downloaded);
 
-  const activeJob = useMemo(
+  const activeChatJob = useMemo(
     () =>
       jobs.find(
         job =>
-          job.modelId === modelId &&
+          modelIdsMatch(job.modelId, modelId) &&
           (job.status === 'queued' || job.status === 'running'),
       ),
     [jobs, modelId],
   );
 
-  const latestJobForModel = useMemo(
-    () => jobs.find(job => job.modelId === modelId),
+  const activeEmbeddingJob = useMemo(
+    () =>
+      jobs.find(
+        job =>
+          modelIdsMatch(job.modelId, embeddingModelId) &&
+          (job.status === 'queued' || job.status === 'running'),
+      ),
+    [jobs, embeddingModelId],
+  );
+
+  const latestChatJob = useMemo(
+    () =>
+      jobs
+        .filter(job => modelIdsMatch(job.modelId, modelId))
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0],
     [jobs, modelId],
+  );
+
+  const latestEmbeddingJob = useMemo(
+    () =>
+      jobs
+        .filter(job => modelIdsMatch(job.modelId, embeddingModelId))
+        .sort((a, b) => b.updatedAt - a.updatedAt)[0],
+    [jobs, embeddingModelId],
+  );
+
+  const hasAnyActiveJob = useMemo(
+    () => jobs.some(job => job.status === 'queued' || job.status === 'running'),
+    [jobs],
   );
 
   const refreshModels = useCallback(async () => {
@@ -222,14 +276,14 @@ export default function Week2LocalRag() {
   }, [refreshDatabase]);
 
   useEffect(() => {
-    if (!activeJob) return;
+    if (!hasAnyActiveJob) return;
 
     const timer = setInterval(() => {
       void refreshModels();
     }, 1800);
 
     return () => clearInterval(timer);
-  }, [activeJob, refreshModels]);
+  }, [hasAnyActiveJob, refreshModels]);
 
   useEffect(() => {
     const node = chatLogRef.current;
@@ -237,11 +291,11 @@ export default function Week2LocalRag() {
     node.scrollTop = node.scrollHeight;
   }, [chatMessages, chatLoading]);
 
-  const startDownload = async () => {
+  const startDownload = async (targetModelId: string, alreadyDownloaded: boolean) => {
     setWarning(undefined);
 
-    if (isAlreadyDownloaded) {
-      setWarning('This model is already downloaded. Select a model marked Not downloaded.');
+    if (alreadyDownloaded) {
+      setWarning(`Model "${targetModelId}" is already downloaded.`);
       return;
     }
 
@@ -249,7 +303,7 @@ export default function Week2LocalRag() {
       const res = await fetch('/api/models/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ runtime, modelId }),
+        body: JSON.stringify({ runtime, modelId: targetModelId }),
       });
 
       const data = await parseApiResponse<{ job?: ModelJob; error?: string }>(res);
@@ -314,6 +368,7 @@ export default function Week2LocalRag() {
       options: {
         chunkSize: 800,
         chunkOverlap: 120,
+        embeddingModelId,
       },
     };
 
@@ -369,6 +424,7 @@ export default function Week2LocalRag() {
             minScore: 0.2,
             temperature: 0.2,
             sourceFilter: selectedSources.length > 0 ? selectedSources : undefined,
+            embeddingModelId,
           },
         }),
       });
@@ -470,70 +526,116 @@ export default function Week2LocalRag() {
 
           <section className="card">
             <h2>Model Runtime Control</h2>
-            <div className="grid2">
-              <label>
-                Runtime
-                <select
-                  value={runtime}
-                  onChange={event => {
-                    const next = event.currentTarget.value as RuntimeName;
-                    setRuntime(next);
-                    setModelId(next === 'foundry' ? 'phi-4-mini-reasoning' : 'qwen2.5-7b-instruct');
-                  }}
-                >
-                  <option value="foundry">Microsoft Foundry Local</option>
-                  <option value="lmstudio">LM Studio</option>
+            <label>
+              Runtime
+              <select
+                value={runtime}
+                onChange={event => {
+                  const next = event.currentTarget.value as RuntimeName;
+                  setRuntime(next);
+                  setModelId(next === 'foundry' ? 'phi-4-mini-reasoning' : 'qwen/qwen3-vl-8b');
+                  setEmbeddingModelId(
+                    next === 'foundry'
+                      ? 'nomic-embed-text-v1'
+                      : 'text-embedding-nomic-embed-text-v1.5',
+                  );
+                }}
+              >
+                <option value="foundry">Microsoft Foundry Local</option>
+                <option value="lmstudio">LM Studio</option>
+              </select>
+            </label>
+            <label>
+              Chat Model ID (used for answer generation)
+              {runtime === 'foundry' ? (
+                <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
+                  {models.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
+                    </option>
+                  ))}
                 </select>
-              </label>
-
-              <label>
-                Model ID
-                {runtime === 'foundry' ? (
-                  <select value={modelId} onChange={event => setModelId(event.currentTarget.value)}>
-                    {models.map(item => (
-                      <option key={item.id} value={item.id}>
-                        {item.id} {item.downloaded ? '(Downloaded)' : '(Not downloaded)'}
-                      </option>
+              ) : (
+                <>
+                  <input
+                    value={modelId}
+                    onChange={event => setModelId(event.currentTarget.value)}
+                    list="runtime-models"
+                  />
+                  <datalist id="runtime-models">
+                    {SUGGESTED_LM_MODELS.map(item => (
+                      <option key={item} value={item} />
                     ))}
-                  </select>
-                ) : (
-                  <>
-                    <input
-                      value={modelId}
-                      onChange={event => setModelId(event.currentTarget.value)}
-                      list="runtime-models"
-                    />
-                    <datalist id="runtime-models">
-                      {SUGGESTED_LM_MODELS.map(item => (
-                        <option key={item} value={item} />
-                      ))}
-                    </datalist>
-                  </>
-                )}
-              </label>
-            </div>
-
+                  </datalist>
+                </>
+              )}
+            </label>
             <div className="actions">
               <button
                 className="btn-primary"
-                onClick={startDownload}
-                disabled={Boolean(activeJob) || isAlreadyDownloaded}
+                onClick={() => void startDownload(modelId, isChatModelDownloaded)}
+                disabled={Boolean(activeChatJob) || isChatModelDownloaded}
               >
-                {activeJob ? 'Download Running...' : isAlreadyDownloaded ? 'Already Downloaded' : 'Download Model'}
+                {activeChatJob
+                  ? 'Chat Model Download Running...'
+                  : isChatModelDownloaded
+                    ? 'Chat Model Already Downloaded'
+                    : 'Download Chat Model'}
               </button>
+            </div>
+            {activeChatJob ? (
+              <p className="muted">
+                Chat model job `{activeChatJob.id}` using {activeChatJob.commandLabel ?? 'download command'}: {activeChatJob.status} ({activeChatJob.progress}%)
+              </p>
+            ) : null}
+            {latestChatJob?.status === 'failed' ? (
+              <p className="panel-error">Chat model download failed: {latestChatJob.error || 'Unknown error'}</p>
+            ) : null}
+            <label>
+              Embedding Model ID (used for both ingest and query retrieval)
+              <input
+                value={embeddingModelId}
+                onChange={event => setEmbeddingModelId(event.currentTarget.value)}
+                list={runtime === 'foundry' ? 'foundry-embedding-models' : 'lm-embedding-models'}
+              />
+              <datalist id="lm-embedding-models">
+                {SUGGESTED_LM_EMBED_MODELS.map(item => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+              <datalist id="foundry-embedding-models">
+                {SUGGESTED_FOUNDRY_EMBED_MODELS.map(item => (
+                  <option key={item} value={item} />
+                ))}
+              </datalist>
+            </label>
+            <div className="actions">
+              <button
+                className="btn-primary"
+                onClick={() => void startDownload(embeddingModelId, isEmbeddingModelDownloaded)}
+                disabled={Boolean(activeEmbeddingJob) || isEmbeddingModelDownloaded}
+              >
+                {activeEmbeddingJob
+                  ? 'Embedding Model Download Running...'
+                  : isEmbeddingModelDownloaded
+                    ? 'Embedding Model Already Downloaded'
+                    : 'Download Embedding Model'}
+              </button>
+            </div>
+            {activeEmbeddingJob ? (
+              <p className="muted">
+                Embedding model job `{activeEmbeddingJob.id}` using {activeEmbeddingJob.commandLabel ?? 'download command'}: {activeEmbeddingJob.status} ({activeEmbeddingJob.progress}%)
+              </p>
+            ) : null}
+            {latestEmbeddingJob?.status === 'failed' ? (
+              <p className="panel-error">Embedding model download failed: {latestEmbeddingJob.error || 'Unknown error'}</p>
+            ) : null}
+
+            <div className="actions">
               <button className="btn-secondary" onClick={refreshModels} disabled={loadingModels}>
                 {loadingModels ? 'Refreshing...' : 'Refresh Models'}
               </button>
             </div>
-
-            {activeJob ? (
-              <p className="muted">
-                Job `{activeJob.id}` using {activeJob.commandLabel ?? 'download command'}: {activeJob.status} ({activeJob.progress}%)
-              </p>
-            ) : null}
-            {latestJobForModel?.status === 'failed' ? (
-              <p className="panel-error">Download failed: {latestJobForModel.error || 'Unknown error'}</p>
-            ) : null}
             {warning ? <p className="panel-error">{warning}</p> : null}
           </section>
 
@@ -545,7 +647,7 @@ export default function Week2LocalRag() {
             <h3>Foundry Local</h3>
             <pre className="code-block">foundry model download phi-4-mini-reasoning</pre>
             <h3>LM Studio CLI</h3>
-            <pre className="code-block">lms get qwen2.5-7b-instruct --yes</pre>
+            <pre className="code-block">lms get qwen/qwen3-vl-8b --yes</pre>
             <ul>
               <li>
                 <a href="https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-local/get-started" target="_blank" rel="noreferrer">
@@ -636,6 +738,9 @@ export default function Week2LocalRag() {
             <p className="muted">
               Total: {totals.documentsIndexed} document(s), {totals.chunksIndexed} chunk(s)
             </p>
+            <p className="muted">
+              Current embedding model (ingest + retrieval): {embeddingModelId}
+            </p>
             <div className="actions">
               <button className="btn-secondary" onClick={refreshDatabase} disabled={loadingDb}>
                 {loadingDb ? 'Refreshing...' : 'Refresh DB'}
@@ -668,6 +773,9 @@ export default function Week2LocalRag() {
                           <strong>{item.source}</strong>
                           <small>
                             {item.chunks} chunk(s), last indexed {formatDateTime(item.lastIndexedAt)}
+                          </small>
+                          <small>
+                            Embedding model(s): {item.embeddingModels?.join(', ') || 'unknown'}
                           </small>
                         </span>
                       </label>
